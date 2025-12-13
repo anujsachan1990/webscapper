@@ -36,9 +36,14 @@ on:
         required: false
         default: ""
       engine:
-        description: "Scraper engine (cheerio or puppeteer)"
+        description: "Scraper engine (cheerio, puppeteer, or firecrawl)"
         required: false
         default: "cheerio"
+        type: choice
+        options:
+          - cheerio
+          - puppeteer
+          - firecrawl
 
 jobs:
   scrape:
@@ -84,6 +89,9 @@ jobs:
 
           # Callback configuration
           CALLBACK_SECRET: ${{ secrets.SCRAPER_CALLBACK_SECRET }}
+
+          # Firecrawl API key (for firecrawl engine)
+          FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
 
           # Job parameters (from dispatch or manual input)
           URLS_JSON: ${{ github.event.client_payload.urls_json || github.event.inputs.urls_json }}
