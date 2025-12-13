@@ -39,15 +39,13 @@ export async function scrapeWithCheerio(
     const html = await response.text();
     const $ = cheerio.load(html);
 
-    // Remove non-content elements
+    // Remove non-content elements (but keep navigation and headers for better coverage)
     $(
-      "script, style, iframe, noscript, .cookie-banner, .popup, .modal" +
-        '[role="navigation"], [role="banner"]'
+      "script, style, iframe, noscript, .cookie-banner, .popup, .modal, .advertisement, .ad"
     ).remove();
 
     // Get title
-    const title =
-      $("title").text().trim() || $("h1").first().text().trim() || "Untitled Page";
+    const title = $("title").text().trim() || $("h1").first().text().trim() || "Untitled Page";
 
     // Get meta description
     const description = $('meta[name="description"]').attr("content") || "";
@@ -83,9 +81,9 @@ export async function scrapeWithCheerio(
     // Clean up and limit size
     content = content.replace(/\s+/g, " ").trim().slice(0, 100000);
 
-    // Extract images
+    // Extract images (PNG, JPEG, WEBP - not SVG)
     const images: Array<{ src: string; alt?: string; title?: string }> = [];
-    const validImageExtensions = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff", ".ico"];
+    const validImageExtensions = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff"];
     const invalidPatterns = [
       "grey-box",
       "placeholder",
@@ -96,37 +94,59 @@ export async function scrapeWithCheerio(
       "pixel",
       "loading",
       "spinner",
-      "icon",
-      "svg",
-      "/icons/",
-      "/svg/",
+      "logo-small",
+      "favicon",
     ];
 
-    $("img").each((_, elem) => {
-      const src =
-        $(elem).attr("src") || $(elem).attr("data-src") || $(elem).attr("data-lazy-src");
-      if (src && (src.startsWith("http") || src.startsWith("/"))) {
+    $("img, picture source, [style*='background-image']").each((_, elem) => {
+      // Try multiple attributes
+      let src =
+        $(elem).attr("src") ||
+        $(elem).attr("data-src") ||
+        $(elem).attr("data-lazy-src") ||
+        $(elem).attr("srcset")?.split(",")[0]?.split(" ")[0] ||
+        $(elem).attr("data-srcset")?.split(",")[0]?.split(" ")[0];
+
+      // Extract from background-image CSS
+      if (!src) {
+        const style = $(elem).attr("style");
+        const bgMatch = style?.match(/background-image:\s*url\(['"]?([^'"]+)['"]?\)/);
+        if (bgMatch) src = bgMatch[1];
+      }
+
+      if (src && (src.startsWith("http") || src.startsWith("/") || src.startsWith("data:"))) {
         try {
-          const absoluteURL = new URL(src, url).href;
+          const absoluteURL = src.startsWith("data:") ? src : new URL(src, url).href;
           const urlLower = absoluteURL.toLowerCase();
 
-          if (urlLower.includes(".svg") || urlLower.includes("/svg/")) return;
+          // Skip SVG images
+          if (
+            urlLower.includes(".svg") ||
+            urlLower.includes("/svg/") ||
+            urlLower.includes("data:image/svg")
+          )
+            return;
 
+          // Skip invalid patterns
           const isInvalidImage = invalidPatterns.some((pattern) =>
             urlLower.includes(pattern.toLowerCase())
           );
           if (isInvalidImage) return;
 
+          // Check for valid extensions (PNG, JPEG, WEBP)
           const hasValidExtension = validImageExtensions.some((ext) => urlLower.includes(ext));
           const isDataUrlImage =
             urlLower.startsWith("data:image/") && !urlLower.startsWith("data:image/svg");
 
           if (hasValidExtension || isDataUrlImage) {
-            images.push({
-              src: absoluteURL,
-              alt: $(elem).attr("alt") || undefined,
-              title: $(elem).attr("title") || undefined,
-            });
+            // Avoid duplicates
+            if (!images.find((img) => img.src === absoluteURL)) {
+              images.push({
+                src: absoluteURL,
+                alt: $(elem).attr("alt") || undefined,
+                title: $(elem).attr("title") || undefined,
+              });
+            }
           }
         } catch {
           // Skip invalid URLs
@@ -184,4 +204,3 @@ export async function scrapeMultipleUrls(
 
   return results;
 }
-

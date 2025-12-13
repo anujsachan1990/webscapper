@@ -73,11 +73,12 @@ export async function scrapeWithPuppeteer(
 
     await page.setViewport({ width: 1920, height: 1080 });
 
-    // Block unnecessary resources
+    // Block only unnecessary resources (keep images for extraction)
     await page.setRequestInterception(true);
     page.on("request", (req) => {
       const resourceType = req.resourceType();
-      if (["image", "font", "media"].includes(resourceType)) {
+      // Only block fonts and media (videos/audio), but allow images
+      if (["font", "media"].includes(resourceType)) {
         req.abort();
       } else {
         req.continue();
@@ -107,44 +108,53 @@ export async function scrapeWithPuppeteer(
       const metaDesc = document.querySelector('meta[name="description"]');
       const description = metaDesc?.getAttribute("content") || "";
 
-      // Remove unwanted elements
+      // Remove unwanted elements (but keep nav, header, footer for better coverage)
       const removeSelectors = [
         "script",
         "style",
         "noscript",
         "iframe",
-        "nav",
-        "footer",
-        "header",
         ".cookie-banner",
         ".popup",
         ".modal",
         ".advertisement",
         ".ad",
-        "[role='banner']",
-        "[role='navigation']",
-        "[role='complementary']",
       ];
 
       removeSelectors.forEach((selector) => {
         document.querySelectorAll(selector).forEach((el) => el.remove());
       });
 
-      const mainContent =
-        document.querySelector("main")?.textContent ||
-        document.querySelector("article")?.textContent ||
-        document.querySelector('[role="main"]')?.textContent ||
-        document.body.textContent ||
-        "";
+      // Extract text content more comprehensively
+      const paragraphs: string[] = [];
+      document.querySelectorAll("*").forEach((elem) => {
+        let directText = "";
+        elem.childNodes.forEach((node) => {
+          if (node.nodeType === Node.TEXT_NODE) {
+            directText += node.textContent || "";
+          }
+        });
 
-      const content = mainContent.replace(/\s+/g, " ").trim().slice(0, 100000);
+        const text = directText
+          .replace(/[\r\n\t]+/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+
+        if (text.length > 10 && /[a-zA-Z]{2,}/.test(text)) {
+          paragraphs.push(text);
+        }
+      });
+
+      // Deduplicate and join
+      const uniqueParagraphs = Array.from(new Set(paragraphs));
+      const content = uniqueParagraphs.join(" ").slice(0, 100000);
 
       return { title, description, content };
     });
 
-    // Extract images
+    // Extract images (PNG, JPEG, WEBP - not SVG)
     const images: Array<{ src: string; alt?: string; title?: string }> = [];
-    const validImageExtensions = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff", ".ico"];
+    const validImageExtensions = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff"];
     const invalidPatterns = [
       "grey-box",
       "placeholder",
@@ -155,44 +165,91 @@ export async function scrapeWithPuppeteer(
       "pixel",
       "loading",
       "spinner",
-      "icon",
-      "svg",
-      "/icons/",
-      "/svg/",
+      "logo-small",
+      "favicon",
     ];
 
     try {
-      const imageElements = await page.$$eval("img", (imgs) =>
-        imgs.map((img) => ({
-          src: img.src || img.getAttribute("data-src") || img.getAttribute("data-lazy-src"),
-          alt: img.alt,
-          title: img.title,
-        }))
-      );
+      const imageElements = await page.evaluate(() => {
+        const results: Array<{ src: string; alt?: string; title?: string }> = [];
+
+        // Get images from img tags
+        document.querySelectorAll("img").forEach((img) => {
+          const src =
+            img.src ||
+            img.getAttribute("data-src") ||
+            img.getAttribute("data-lazy-src") ||
+            img.getAttribute("srcset")?.split(",")[0]?.split(" ")[0];
+
+          if (src) {
+            results.push({
+              src,
+              alt: img.alt || undefined,
+              title: img.title || undefined,
+            });
+          }
+        });
+
+        // Get images from picture source tags
+        document.querySelectorAll("picture source").forEach((source) => {
+          const src =
+            source.getAttribute("srcset")?.split(",")[0]?.split(" ")[0] ||
+            source.getAttribute("data-srcset")?.split(",")[0]?.split(" ")[0];
+
+          if (src) {
+            results.push({ src });
+          }
+        });
+
+        // Get background images from CSS
+        document.querySelectorAll("[style*='background-image']").forEach((elem) => {
+          const style = elem.getAttribute("style");
+          const bgMatch = style?.match(/background-image:\s*url\(['"]?([^'"]+)['"]?\)/);
+          if (bgMatch?.[1]) {
+            results.push({ src: bgMatch[1] });
+          }
+        });
+
+        return results;
+      });
 
       for (const img of imageElements) {
-        if (img.src && (img.src.startsWith("http") || img.src.startsWith("/"))) {
+        if (
+          img.src &&
+          (img.src.startsWith("http") || img.src.startsWith("/") || img.src.startsWith("data:"))
+        ) {
           try {
-            const absoluteURL = new URL(img.src, url).href;
+            const absoluteURL = img.src.startsWith("data:") ? img.src : new URL(img.src, url).href;
             const urlLower = absoluteURL.toLowerCase();
 
-            if (urlLower.includes(".svg") || urlLower.includes("/svg/")) continue;
+            // Skip SVG images
+            if (
+              urlLower.includes(".svg") ||
+              urlLower.includes("/svg/") ||
+              urlLower.includes("data:image/svg")
+            )
+              continue;
 
+            // Skip invalid patterns
             const isInvalidImage = invalidPatterns.some((pattern) =>
               urlLower.includes(pattern.toLowerCase())
             );
             if (isInvalidImage) continue;
 
+            // Check for valid extensions (PNG, JPEG, WEBP)
             const hasValidExtension = validImageExtensions.some((ext) => urlLower.includes(ext));
             const isDataUrlImage =
               urlLower.startsWith("data:image/") && !urlLower.startsWith("data:image/svg");
 
             if (hasValidExtension || isDataUrlImage) {
-              images.push({
-                src: absoluteURL,
-                alt: img.alt || undefined,
-                title: img.title || undefined,
-              });
+              // Avoid duplicates
+              if (!images.find((i) => i.src === absoluteURL)) {
+                images.push({
+                  src: absoluteURL,
+                  alt: img.alt || undefined,
+                  title: img.title || undefined,
+                });
+              }
             }
           } catch {
             // Skip invalid URLs
@@ -258,4 +315,3 @@ export async function scrapeMultipleUrls(
   await closeBrowser();
   return results;
 }
-

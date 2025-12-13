@@ -171,17 +171,32 @@ export async function indexContent(
     // Process chunks one at a time to minimize memory
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
+
+      // Build metadata with images (only on first chunk to avoid duplication)
+      const metadata: Record<string, unknown> = {
+        url: content.url,
+        title: content.title,
+        brandSlug,
+        chunkIndex: i,
+        totalChunks: chunks.length,
+        timestamp: content.timestamp,
+      };
+
+      // Add images to first chunk only
+      if (i === 0 && content.images && content.images.length > 0) {
+        metadata.images = JSON.stringify(content.images);
+        metadata.imageCount = content.images.length;
+      }
+
+      // Add description if available
+      if (content.description) {
+        metadata.description = content.description;
+      }
+
       const vector = {
         id: generateChunkId(content.url, i, brandSlug),
         data: chunk,
-        metadata: {
-          url: content.url,
-          title: content.title,
-          brandSlug,
-          chunkIndex: i,
-          totalChunks: chunks.length,
-          timestamp: content.timestamp,
-        },
+        metadata,
       };
 
       await upsertVectors([vector]);
