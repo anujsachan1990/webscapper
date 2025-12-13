@@ -19,32 +19,32 @@ name: Web Scraper
 on:
   repository_dispatch:
     types: [scrape]
-  
+
   # Allow manual trigger for testing
   workflow_dispatch:
     inputs:
       urls_json:
-        description: 'JSON array of URLs to scrape'
+        description: "JSON array of URLs to scrape"
         required: true
         default: '["https://example.com"]'
       brand_slug:
-        description: 'Brand identifier for indexing'
+        description: "Brand identifier for indexing"
         required: true
-        default: 'test'
+        default: "test"
       job_id:
-        description: 'Job ID for tracking'
+        description: "Job ID for tracking"
         required: false
-        default: ''
+        default: ""
       engine:
-        description: 'Scraper engine (cheerio or puppeteer)'
+        description: "Scraper engine (cheerio or puppeteer)"
         required: false
-        default: 'cheerio'
+        default: "cheerio"
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -52,7 +52,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
 
       - name: Install dependencies
         run: npm install
@@ -66,15 +66,17 @@ jobs:
 
       - name: Run Scraper
         env:
+          # Increase Node.js memory limit
+          NODE_OPTIONS: "--max-old-space-size=4096"
           # Upstash credentials (from repository secrets)
           UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
           UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}
           UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
           UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
-          
+
           # Callback configuration
           CALLBACK_SECRET: ${{ secrets.SCRAPER_CALLBACK_SECRET }}
-          
+
           # Job parameters (from dispatch or manual input)
           URLS_JSON: ${{ github.event.client_payload.urls_json || github.event.inputs.urls_json }}
           BRAND_SLUG: ${{ github.event.client_payload.brand_slug || github.event.inputs.brand_slug }}
@@ -86,7 +88,7 @@ jobs:
           echo "   Brand: $BRAND_SLUG"
           echo "   Job ID: $JOB_ID"
           echo "   Engine: $SCRAPER_ENGINE"
-          
+
           npm run scrape
 
       - name: Job Summary
@@ -97,4 +99,3 @@ jobs:
           echo "- **Brand:** ${{ github.event.client_payload.brand_slug || github.event.inputs.brand_slug }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Job ID:** ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
-
