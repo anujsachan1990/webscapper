@@ -8,3 +8,9 @@ export {
   scrapeMultipleUrls as scrapeMultipleUrlsWithPuppeteer,
   closeBrowser,
 } from "./puppeteer-scraper.js";
+export {
+  scrapeWithFirecrawl,
+  scrapeMultipleUrlsWithFirecrawl,
+  crawlWithFirecrawl,
+  isFirecrawlConfigured,
+} from "./firecrawl-scraper.js";

@@ -15,9 +15,9 @@ import "dotenv/config";
 import { scrapeMultipleUrls } from "./scrapers/cheerio-scraper.js";
 import { indexMultipleContents, validateCredentials } from "./indexer/upstash-indexer.js";
 import { markJobStarted, markJobCompleted } from "./indexer/redis-status.js";
-import type { CallbackPayload, ScrapedContent } from "./types.js";
+import type { CallbackPayload, ScrapedContent, ScraperEngine } from "./types.js";
 
-// Dynamic import for Puppeteer to avoid loading it when using Cheerio
+// Dynamic imports to avoid loading unused scrapers
 async function loadPuppeteerScraper() {
   const module = await import("./scrapers/puppeteer-scraper.js");
   return {
@@ -26,12 +26,20 @@ async function loadPuppeteerScraper() {
   };
 }
 
+async function loadFirecrawlScraper() {
+  const module = await import("./scrapers/firecrawl-scraper.js");
+  return {
+    scrapeMultipleUrls: module.scrapeMultipleUrlsWithFirecrawl,
+    isConfigured: module.isFirecrawlConfigured,
+  };
+}
+
 interface CliArgs {
   urls?: string[];
   urlsJson?: string;
   brandSlug: string;
   jobId?: string;
-  engine?: "cheerio" | "puppeteer";
+  engine?: ScraperEngine;
   concurrency?: number;
   timeout?: number;
   callbackUrl?: string;
@@ -55,7 +63,7 @@ function parseArgs(): CliArgs {
     } else if (arg.startsWith("--job-id=")) {
       parsed.jobId = arg.slice(9);
     } else if (arg.startsWith("--engine=")) {
-      parsed.engine = arg.slice(9) as "cheerio" | "puppeteer";
+      parsed.engine = arg.slice(9) as ScraperEngine;
     } else if (arg.startsWith("--concurrency=")) {
       parsed.concurrency = parseInt(arg.slice(14), 10);
     } else if (arg.startsWith("--callback-url=")) {
@@ -78,7 +86,7 @@ function parseArgs(): CliArgs {
     parsed.jobId = process.env.JOB_ID;
   }
   if (!parsed.engine && process.env.SCRAPER_ENGINE) {
-    parsed.engine = process.env.SCRAPER_ENGINE as "cheerio" | "puppeteer";
+    parsed.engine = process.env.SCRAPER_ENGINE as ScraperEngine;
   }
   if (!parsed.callbackUrl && process.env.CALLBACK_URL) {
     parsed.callbackUrl = process.env.CALLBACK_URL;
@@ -210,12 +218,28 @@ async function main() {
       },
     };
 
-    if (args.engine === "puppeteer") {
-      // Dynamically load Puppeteer only when needed to save memory
-      const puppeteerScraper = await loadPuppeteerScraper();
-      scrapedContents = await puppeteerScraper.scrapeMultipleUrls(urls, scrapeOptions);
-    } else {
-      scrapedContents = await scrapeMultipleUrls(urls, scrapeOptions);
+    // Select scraper engine
+    switch (args.engine) {
+      case "puppeteer": {
+        const puppeteerScraper = await loadPuppeteerScraper();
+        scrapedContents = await puppeteerScraper.scrapeMultipleUrls(urls, scrapeOptions);
+        break;
+      }
+      case "firecrawl": {
+        const firecrawlScraper = await loadFirecrawlScraper();
+        if (!firecrawlScraper.isConfigured()) {
+          console.error("❌ FIRECRAWL_API_KEY not configured. Falling back to Cheerio.");
+          scrapedContents = await scrapeMultipleUrls(urls, scrapeOptions);
+        } else {
+          console.log("🔥 Using Firecrawl for LLM-optimized scraping");
+          scrapedContents = await firecrawlScraper.scrapeMultipleUrls(urls, scrapeOptions);
+        }
+        break;
+      }
+      case "cheerio":
+      default:
+        scrapedContents = await scrapeMultipleUrls(urls, scrapeOptions);
+        break;
     }
 
     console.log(`\n✅ Scraped ${scrapedContents.length}/${urls.length} URLs`);
@@ -256,8 +280,12 @@ async function main() {
   } finally {
     // Cleanup Puppeteer if used
     if (args.engine === "puppeteer") {
-      const puppeteerScraper = await loadPuppeteerScraper();
-      await puppeteerScraper.closeBrowser();
+      try {
+        const puppeteerScraper = await loadPuppeteerScraper();
+        await puppeteerScraper.closeBrowser();
+      } catch {
+        // Ignore cleanup errors
+      }
     }
   }
 

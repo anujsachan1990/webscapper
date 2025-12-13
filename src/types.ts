@@ -11,8 +11,10 @@ export interface ScrapedContent {
   images?: Array<{ src: string; alt?: string; title?: string }>;
 }
 
+export type ScraperEngine = "cheerio" | "puppeteer" | "firecrawl";
+
 export interface ScrapeOptions {
-  engine?: "cheerio" | "puppeteer";
+  engine?: ScraperEngine;
   concurrency?: number;
   timeout?: number;
   onProgress?: (indexed: number, total: number, currentUrl: string) => void;
