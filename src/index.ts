@@ -12,20 +12,19 @@
  */
 
 import "dotenv/config";
-import { scrapeWithCheerio, scrapeMultipleUrls } from "./scrapers/cheerio-scraper.js";
-import {
-  scrapeWithPuppeteer,
-  scrapeMultipleUrls as scrapeMultipleUrlsWithPuppeteer,
-  closeBrowser,
-} from "./scrapers/puppeteer-scraper.js";
+import { scrapeMultipleUrls } from "./scrapers/cheerio-scraper.js";
 import { indexMultipleContents } from "./indexer/upstash-indexer.js";
-import {
-  markJobStarted,
-  markJobCompleted,
-  incrementIndexed,
-  incrementFailed,
-} from "./indexer/redis-status.js";
+import { markJobStarted, markJobCompleted } from "./indexer/redis-status.js";
 import type { CallbackPayload, ScrapedContent } from "./types.js";
+
+// Dynamic import for Puppeteer to avoid loading it when using Cheerio
+async function loadPuppeteerScraper() {
+  const module = await import("./scrapers/puppeteer-scraper.js");
+  return {
+    scrapeMultipleUrls: module.scrapeMultipleUrls,
+    closeBrowser: module.closeBrowser,
+  };
+}
 
 interface CliArgs {
   urls?: string[];
@@ -157,7 +156,7 @@ async function main() {
     console.error("❌ No URLs provided. Use --urls or --urls-json");
     console.log("\nUsage:");
     console.log('  npm run scrape -- --urls="https://example.com" --brand=mysite');
-    console.log('  npm run scrape -- --urls-json=\'["https://example.com"]\' --brand=mysite');
+    console.log("  npm run scrape -- --urls-json='[\"https://example.com\"]' --brand=mysite");
     process.exit(1);
   }
 
@@ -192,7 +191,9 @@ async function main() {
     };
 
     if (args.engine === "puppeteer") {
-      scrapedContents = await scrapeMultipleUrlsWithPuppeteer(urls, scrapeOptions);
+      // Dynamically load Puppeteer only when needed to save memory
+      const puppeteerScraper = await loadPuppeteerScraper();
+      scrapedContents = await puppeteerScraper.scrapeMultipleUrls(urls, scrapeOptions);
     } else {
       scrapedContents = await scrapeMultipleUrls(urls, scrapeOptions);
     }
@@ -226,7 +227,8 @@ async function main() {
   } finally {
     // Cleanup Puppeteer if used
     if (args.engine === "puppeteer") {
-      await closeBrowser();
+      const puppeteerScraper = await loadPuppeteerScraper();
+      await puppeteerScraper.closeBrowser();
     }
   }
 
@@ -259,4 +261,3 @@ main().catch((error) => {
   console.error("Fatal error:", error);
   process.exit(1);
 });
-
