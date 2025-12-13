@@ -57,7 +57,7 @@ export async function closeBrowser(): Promise<void> {
  */
 export async function scrapeWithPuppeteer(
   url: string,
-  timeout = 30000
+  timeout = 60000 // Increased default timeout to 60 seconds
 ): Promise<ScrapedContent | null> {
   let page: Page | null = null;
 
@@ -85,10 +85,26 @@ export async function scrapeWithPuppeteer(
       }
     });
 
-    await page.goto(url, {
-      waitUntil: "networkidle2",
-      timeout,
-    });
+    // Try with networkidle2 first, fall back to domcontentloaded if timeout
+    try {
+      await page.goto(url, {
+        waitUntil: "networkidle2",
+        timeout,
+      });
+    } catch (navError) {
+      // If networkidle2 times out, retry with less strict wait condition
+      if (navError instanceof Error && navError.message.includes("timeout")) {
+        console.log(`   ⚠️  networkidle2 timeout, retrying with domcontentloaded...`);
+        await page.goto(url, {
+          waitUntil: "domcontentloaded",
+          timeout,
+        });
+        // Give some time for JS to execute
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      } else {
+        throw navError;
+      }
+    }
 
     // Scroll to trigger lazy loading
     await page.evaluate(() => {
@@ -289,7 +305,7 @@ export async function scrapeMultipleUrls(
   urls: string[],
   options: ScrapeOptions = {}
 ): Promise<ScrapedContent[]> {
-  const { concurrency = 3, timeout = 30000, onProgress } = options;
+  const { concurrency = 3, timeout = 60000, onProgress } = options;
   const results: ScrapedContent[] = [];
 
   for (let i = 0; i < urls.length; i += concurrency) {

@@ -33,6 +33,7 @@ interface CliArgs {
   jobId?: string;
   engine?: "cheerio" | "puppeteer";
   concurrency?: number;
+  timeout?: number;
   callbackUrl?: string;
   callbackSecret?: string;
 }
@@ -61,6 +62,8 @@ function parseArgs(): CliArgs {
       parsed.callbackUrl = arg.slice(15);
     } else if (arg.startsWith("--callback-secret=")) {
       parsed.callbackSecret = arg.slice(18);
+    } else if (arg.startsWith("--timeout=")) {
+      parsed.timeout = parseInt(arg.slice(10), 10);
     }
   }
 
@@ -83,6 +86,9 @@ function parseArgs(): CliArgs {
   if (!parsed.callbackSecret && process.env.CALLBACK_SECRET) {
     parsed.callbackSecret = process.env.CALLBACK_SECRET;
   }
+  if (!parsed.timeout && process.env.SCRAPE_TIMEOUT) {
+    parsed.timeout = parseInt(process.env.SCRAPE_TIMEOUT, 10);
+  }
 
   return {
     urls: parsed.urls,
@@ -91,6 +97,7 @@ function parseArgs(): CliArgs {
     jobId: parsed.jobId,
     engine: parsed.engine || "cheerio",
     concurrency: parsed.concurrency || 3,
+    timeout: parsed.timeout || 60000, // Default 60 seconds
     callbackUrl: parsed.callbackUrl,
     callbackSecret: parsed.callbackSecret,
   };
@@ -165,6 +172,7 @@ async function main() {
   console.log(`   Engine: ${args.engine}`);
   console.log(`   URLs: ${urls.length}`);
   console.log(`   Concurrency: ${args.concurrency}`);
+  console.log(`   Timeout: ${args.timeout}ms`);
   if (args.jobId) console.log(`   Job ID: ${args.jobId}`);
   if (args.callbackUrl) console.log(`   Callback: ${args.callbackUrl}`);
 
@@ -196,6 +204,7 @@ async function main() {
     // Scrape URLs
     const scrapeOptions = {
       concurrency: args.concurrency,
+      timeout: args.timeout,
       onProgress: (current: number, total: number, url: string) => {
         console.log(`[${current}/${total}] Scraping: ${url}`);
       },
