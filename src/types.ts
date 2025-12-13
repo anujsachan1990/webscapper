@@ -43,4 +43,3 @@ export interface CallbackPayload {
   failed: number;
   total: number;
 }
-

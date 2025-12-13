@@ -8,4 +8,3 @@ export {
   scrapeMultipleUrls as scrapeMultipleUrlsWithPuppeteer,
   closeBrowser,
 } from "./puppeteer-scraper.js";
-
