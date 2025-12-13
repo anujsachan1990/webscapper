@@ -51,6 +51,15 @@ function chunkContent(content: string, chunkSize = 800, chunkOverlap = 100): str
   // Limit total content to prevent memory issues
   const limitedContent = content.slice(0, 50000);
 
+  // If content is shorter than chunk size, return it as a single chunk
+  if (limitedContent.length <= chunkSize) {
+    const trimmed = limitedContent.trim();
+    if (trimmed.length > 50) {
+      return [trimmed];
+    }
+    return [];
+  }
+
   while (start < limitedContent.length) {
     const end = Math.min(start + chunkSize, limitedContent.length);
     const chunk = limitedContent.slice(start, end).trim();
@@ -59,8 +68,19 @@ function chunkContent(content: string, chunkSize = 800, chunkOverlap = 100): str
       chunks.push(chunk);
     }
 
-    start = end - chunkOverlap;
-    if (start >= limitedContent.length - 50) break;
+    // Move forward, ensuring we always make progress
+    const nextStart = end - chunkOverlap;
+    if (nextStart <= start) {
+      // Prevent infinite loop - if overlap would move us backwards or keep us in place, break
+      break;
+    }
+
+    start = nextStart;
+
+    // Break if we're near the end
+    if (start >= limitedContent.length - chunkOverlap) {
+      break;
+    }
   }
 
   // Limit number of chunks per page
@@ -90,20 +110,36 @@ async function upsertVectors(
 ): Promise<void> {
   const { url, token } = getCredentials();
 
-  const response = await fetch(`${url}/upsert-data`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(vectors),
-  });
+  try {
+    // Add timeout to prevent hanging
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000); // 30s timeout
 
-  // Always consume response body to prevent memory leaks
-  const responseText = await response.text();
+    const response = await fetch(`${url}/upsert-data`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(vectors),
+      signal: controller.signal,
+    });
 
-  if (!response.ok) {
-    throw new Error(`Upstash upsert failed: ${response.status} - ${responseText}`);
+    clearTimeout(timeout);
+
+    // Always consume response body to prevent memory leaks
+    const responseText = await response.text();
+
+    if (!response.ok) {
+      throw new Error(
+        `Upstash upsert failed: ${response.status} - ${responseText.substring(0, 200)}`
+      );
+    }
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Upstash request timed out after 30 seconds");
+    }
+    throw error;
   }
 }
 
@@ -187,6 +223,7 @@ export async function indexMultipleContents(
 
   // Process in small batches to manage memory
   const batchSize = 5;
+
   for (let i = 0; i < contents.length; i += batchSize) {
     const batch = contents.slice(i, i + batchSize);
 
