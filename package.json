@@ -1,0 +1,39 @@
+{
+  "name": "web-scraper-service",
+  "version": "1.0.0",
+  "description": "Standalone web scraping service for RAG content indexing. Designed to run in GitHub Actions or as a standalone service.",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "scrape": "tsx src/index.ts",
+    "scrape:cheerio": "tsx src/index.ts --engine=cheerio",
+    "scrape:puppeteer": "tsx src/index.ts --engine=puppeteer",
+    "test": "tsx src/test.ts",
+    "lint": "eslint src/",
+    "type-check": "tsc --noEmit"
+  },
+  "keywords": [
+    "web-scraper",
+    "rag",
+    "content-indexing",
+    "puppeteer",
+    "cheerio"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@upstash/vector": "^1.2.2",
+    "@upstash/redis": "^1.35.7",
+    "cheerio": "^1.1.2",
+    "puppeteer": "^24.32.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "tsx": "^4.20.6",
+    "typescript": "^5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
+

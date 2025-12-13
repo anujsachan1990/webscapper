@@ -1,0 +1,101 @@
+# Web Scraper Service - GitHub Actions Workflow
+#
+# This workflow is triggered by a repository_dispatch event from the main app.
+# It scrapes the provided URLs and indexes them to Upstash Vector.
+#
+# Trigger payload:
+# {
+#   "event_type": "scrape",
+#   "client_payload": {
+#     "urls_json": "[\"https://example.com\"]",
+#     "job_id": "abc123",
+#     "brand_slug": "mysite",
+#     "callback_url": "https://app.com/api/setup/scraper-callback"
+#   }
+# }
+
+name: Web Scraper
+
+on:
+  repository_dispatch:
+    types: [scrape]
+  
+  # Allow manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      urls_json:
+        description: 'JSON array of URLs to scrape'
+        required: true
+        default: '["https://example.com"]'
+      brand_slug:
+        description: 'Brand identifier for indexing'
+        required: true
+        default: 'test'
+      job_id:
+        description: 'Job ID for tracking'
+        required: false
+        default: ''
+      engine:
+        description: 'Scraper engine (cheerio or puppeteer)'
+        required: false
+        default: 'cheerio'
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Install Chrome for Puppeteer (if using puppeteer engine)
+      - name: Setup Chrome
+        if: github.event.client_payload.engine == 'puppeteer' || github.event.inputs.engine == 'puppeteer'
+        uses: browser-actions/setup-chrome@latest
+        with:
+          chrome-version: stable
+
+      - name: Run Scraper
+        env:
+          # Upstash credentials (from repository secrets)
+          UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
+          UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          
+          # Callback configuration
+          CALLBACK_SECRET: ${{ secrets.SCRAPER_CALLBACK_SECRET }}
+          
+          # Job parameters (from dispatch or manual input)
+          URLS_JSON: ${{ github.event.client_payload.urls_json || github.event.inputs.urls_json }}
+          BRAND_SLUG: ${{ github.event.client_payload.brand_slug || github.event.inputs.brand_slug }}
+          JOB_ID: ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
+          CALLBACK_URL: ${{ github.event.client_payload.callback_url || '' }}
+          SCRAPER_ENGINE: ${{ github.event.client_payload.engine || github.event.inputs.engine || 'cheerio' }}
+        run: |
+          echo "🚀 Starting scrape job"
+          echo "   Brand: $BRAND_SLUG"
+          echo "   Job ID: $JOB_ID"
+          echo "   Engine: $SCRAPER_ENGINE"
+          
+          npm run scrape
+
+      - name: Job Summary
+        if: always()
+        run: |
+          echo "## Scrape Job Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Brand:** ${{ github.event.client_payload.brand_slug || github.event.inputs.brand_slug }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Job ID:** ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+
