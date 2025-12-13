@@ -141,9 +141,50 @@ export async function scrapeWithPuppeteer(
         document.querySelectorAll(selector).forEach((el) => el.remove());
       });
 
+      // Extract table data first (preserving structure)
+      const tableData: string[] = [];
+      document.querySelectorAll("table").forEach((table) => {
+        const rows: string[] = [];
+
+        // Extract headers
+        const headers: string[] = [];
+        table.querySelectorAll("thead th, thead td, tr:first-child th").forEach((th) => {
+          const headerText = (th.textContent || "")
+            .replace(/[\r\n\t]+/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+          if (headerText) headers.push(headerText);
+        });
+        if (headers.length > 0) {
+          rows.push("Headers: " + headers.join(" | "));
+        }
+
+        // Extract body rows
+        table.querySelectorAll("tbody tr, tr").forEach((tr) => {
+          const cells: string[] = [];
+          tr.querySelectorAll("td, th").forEach((cell) => {
+            const cellText = (cell.textContent || "")
+              .replace(/[\r\n\t]+/g, " ")
+              .replace(/\s+/g, " ")
+              .trim();
+            if (cellText) cells.push(cellText);
+          });
+          if (cells.length > 0) {
+            rows.push(cells.join(" | "));
+          }
+        });
+
+        if (rows.length > 0) {
+          tableData.push("Table: " + rows.join(" | Row: "));
+        }
+      });
+
       // Extract text content more comprehensively
       const paragraphs: string[] = [];
       document.querySelectorAll("*").forEach((elem) => {
+        // Skip table elements as we handle them separately
+        if (elem.closest("table")) return;
+
         let directText = "";
         elem.childNodes.forEach((node) => {
           if (node.nodeType === Node.TEXT_NODE) {
@@ -156,13 +197,24 @@ export async function scrapeWithPuppeteer(
           .replace(/\s+/g, " ")
           .trim();
 
-        if (text.length > 10 && /[a-zA-Z]{2,}/.test(text)) {
+        // More permissive: include text with 3+ chars that has some meaningful content
+        // This captures percentages, numbers with units, etc.
+        if (
+          text.length >= 3 &&
+          (/[a-zA-Z]{2,}/.test(text) || // Has alphabetic content
+            /\d+\.?\d*%/.test(text) || // Has percentage
+            /\$[\d,]+/.test(text) || // Has currency
+            /\d+\.?\d*\s*(years?|months?|days?|%|p\.a\.|pa)/i.test(text)) // Has numeric with unit
+        ) {
           paragraphs.push(text);
         }
       });
 
+      // Combine table data with regular paragraphs
+      const allContent = [...tableData, ...paragraphs];
+
       // Deduplicate and join
-      const uniqueParagraphs = Array.from(new Set(paragraphs));
+      const uniqueParagraphs = Array.from(new Set(allContent));
       const content = uniqueParagraphs.join(" ").slice(0, 100000);
 
       return { title, description, content };
