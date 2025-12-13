@@ -22,8 +22,10 @@
   "license": "MIT",
   "dependencies": {
     "cheerio": "^1.1.2",
-    "puppeteer": "^24.32.0",
     "dotenv": "^16.4.5"
+  },
+  "optionalDependencies": {
+    "puppeteer": "^24.32.0"
   },
   "devDependencies": {
     "@types/node": "^20",

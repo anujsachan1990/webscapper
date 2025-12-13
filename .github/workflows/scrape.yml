@@ -54,8 +54,13 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install dependencies
-        run: npm install
+      - name: Install dependencies (without Puppeteer)
+        run: npm install --ignore-optional
+
+      # Install Puppeteer only when using puppeteer engine
+      - name: Install Puppeteer
+        if: github.event.client_payload.engine == 'puppeteer' || github.event.inputs.engine == 'puppeteer'
+        run: npm install puppeteer
 
       # Install Chrome for Puppeteer (if using puppeteer engine)
       - name: Setup Chrome
@@ -66,8 +71,8 @@ jobs:
 
       - name: Run Scraper
         env:
-          # Increase Node.js memory limit
-          NODE_OPTIONS: "--max-old-space-size=4096"
+          # Set reasonable memory limit (1GB for Cheerio, 2GB for Puppeteer)
+          NODE_OPTIONS: ${{ (github.event.client_payload.engine == 'puppeteer' || github.event.inputs.engine == 'puppeteer') && '--max-old-space-size=2048' || '--max-old-space-size=1024' }}
           # Upstash credentials (from repository secrets)
           UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
           UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}
@@ -88,6 +93,7 @@ jobs:
           echo "   Brand: $BRAND_SLUG"
           echo "   Job ID: $JOB_ID"
           echo "   Engine: $SCRAPER_ENGINE"
+          echo "   Memory limit: $NODE_OPTIONS"
 
           npm run scrape
 
