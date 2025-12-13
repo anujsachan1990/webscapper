@@ -26,7 +26,7 @@ on:
       urls_json:
         description: "JSON array of URLs to scrape"
         required: true
-        default: '["https://hesta.com.au"]'
+        default: '["https://example.com"]'
       brand_slug:
         description: "Brand identifier for indexing"
         required: true
