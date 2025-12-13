@@ -57,6 +57,9 @@ jobs:
       - name: Install dependencies (without Puppeteer)
         run: npm install --ignore-optional
 
+      - name: Build TypeScript
+        run: npm run build
+
       # Install Puppeteer only when using puppeteer engine
       - name: Install Puppeteer
         if: github.event.client_payload.engine == 'puppeteer' || github.event.inputs.engine == 'puppeteer'
@@ -71,8 +74,8 @@ jobs:
 
       - name: Run Scraper
         env:
-          # Set reasonable memory limit (1GB for Cheerio, 2GB for Puppeteer)
-          NODE_OPTIONS: ${{ (github.event.client_payload.engine == 'puppeteer' || github.event.inputs.engine == 'puppeteer') && '--max-old-space-size=2048' || '--max-old-space-size=1024' }}
+          # Set reasonable memory limit (512MB for Cheerio, 1GB for Puppeteer)
+          NODE_OPTIONS: ${{ (github.event.client_payload.engine == 'puppeteer' || github.event.inputs.engine == 'puppeteer') && '--max-old-space-size=1024' || '--max-old-space-size=512' }}
           # Upstash credentials (from repository secrets)
           UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
           UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}

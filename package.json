@@ -3,11 +3,13 @@
   "version": "1.0.0",
   "description": "Standalone web scraping service for RAG content indexing. Designed to run in GitHub Actions or as a standalone service.",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "scripts": {
-    "scrape": "tsx src/index.ts",
-    "scrape:cheerio": "tsx src/index.ts --engine=cheerio",
-    "scrape:puppeteer": "tsx src/index.ts --engine=puppeteer",
+    "build": "tsc",
+    "scrape": "node dist/index.js",
+    "scrape:dev": "tsx src/index.ts",
+    "scrape:cheerio": "node dist/index.js --engine=cheerio",
+    "scrape:puppeteer": "node dist/index.js --engine=puppeteer",
     "test": "tsx src/test.ts",
     "lint": "eslint src/",
     "type-check": "tsc --noEmit"
