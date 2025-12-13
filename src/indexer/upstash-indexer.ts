@@ -163,21 +163,32 @@ export async function indexMultipleContents(
   let failed = 0;
   const errors: string[] = [];
 
-  for (const content of contents) {
-    const result = await indexContent(content, options);
-    if (result.success) {
-      totalIndexed++;
-      totalChunks += result.chunksIndexed;
-    } else {
-      failed++;
-      if (result.error) {
-        errors.push(`${content.url}: ${result.error}`);
+  // Process in small batches to manage memory
+  const batchSize = 5;
+  for (let i = 0; i < contents.length; i += batchSize) {
+    const batch = contents.slice(i, i + batchSize);
+
+    for (const content of batch) {
+      const result = await indexContent(content, options);
+      if (result.success) {
+        totalIndexed++;
+        totalChunks += result.chunksIndexed;
+      } else {
+        failed++;
+        if (result.error) {
+          errors.push(`${content.url}: ${result.error}`);
+        }
       }
     }
 
-    // Force garbage collection hint
+    // Force garbage collection after each batch
     if (global.gc) {
       global.gc();
+    }
+
+    // Small delay between batches to allow GC
+    if (i + batchSize < contents.length) {
+      await new Promise((r) => setTimeout(r, 100));
     }
   }
 

@@ -74,8 +74,8 @@ jobs:
 
       - name: Run Scraper
         env:
-          # Set reasonable memory limit (512MB for Cheerio, 1GB for Puppeteer)
-          NODE_OPTIONS: ${{ (github.event.client_payload.engine == 'puppeteer' || github.event.inputs.engine == 'puppeteer') && '--max-old-space-size=1024' || '--max-old-space-size=512' }}
+          # Set memory limit and enable garbage collection (2GB for Cheerio, 4GB for Puppeteer)
+          NODE_OPTIONS: ${{ (github.event.client_payload.engine == 'puppeteer' || github.event.inputs.engine == 'puppeteer') && '--max-old-space-size=4096 --expose-gc' || '--max-old-space-size=2048 --expose-gc' }}
           # Upstash credentials (from repository secrets)
           UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
           UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}

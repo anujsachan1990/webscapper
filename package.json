@@ -6,10 +6,10 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "scrape": "node dist/index.js",
-    "scrape:dev": "tsx src/index.ts",
-    "scrape:cheerio": "node dist/index.js --engine=cheerio",
-    "scrape:puppeteer": "node dist/index.js --engine=puppeteer",
+    "scrape": "node --max-old-space-size=2048 --expose-gc dist/index.js",
+    "scrape:dev": "node --max-old-space-size=2048 --expose-gc --loader tsx src/index.ts",
+    "scrape:cheerio": "node --max-old-space-size=2048 --expose-gc dist/index.js --engine=cheerio",
+    "scrape:puppeteer": "node --max-old-space-size=4096 --expose-gc dist/index.js --engine=puppeteer",
     "test": "tsx src/test.ts",
     "lint": "eslint src/",
     "type-check": "tsc --noEmit"

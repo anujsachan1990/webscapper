@@ -213,6 +213,15 @@ async function main() {
     indexed = indexResult.totalIndexed;
     failed = urls.length - indexed;
 
+    // Clear scraped contents from memory
+    scrapedContents.length = 0;
+    scrapedContents = [];
+
+    // Force garbage collection
+    if (global.gc) {
+      global.gc();
+    }
+
     console.log(`\n📊 Indexing Results:`);
     console.log(`   ✅ Indexed: ${indexed} pages (${indexResult.totalChunks} chunks)`);
     console.log(`   ❌ Failed: ${indexResult.failed} pages`);
