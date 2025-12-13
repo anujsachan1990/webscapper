@@ -37,7 +37,7 @@ async function redisCommand(command: string[]): Promise<unknown> {
       return null;
     }
 
-    const data = await response.json();
+    const data = (await response.json()) as { result?: unknown };
     return data.result;
   } catch (error) {
     console.warn("Redis command error:", error);

@@ -203,7 +203,7 @@ export async function getIndexStats(): Promise<{
     throw new Error(`Failed to get index info: ${response.status}`);
   }
 
-  const data = await response.json();
+  const data = (await response.json()) as { result?: { vectorCount?: number; dimension?: number } };
   return {
     totalVectors: data.result?.vectorCount || 0,
     dimension: data.result?.dimension || 0,
