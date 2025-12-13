@@ -7,8 +7,15 @@
 
 import type { ScrapedContent, IndexOptions } from "../types.js";
 
+// Cached credentials to avoid repeated env lookups
+let cachedCredentials: { url: string; token: string } | null = null;
+
 // Get Upstash credentials
 function getCredentials() {
+  if (cachedCredentials) {
+    return cachedCredentials;
+  }
+
   const url = process.env.UPSTASH_VECTOR_REST_URL;
   const token = process.env.UPSTASH_VECTOR_REST_TOKEN;
 
@@ -18,7 +25,20 @@ function getCredentials() {
     );
   }
 
-  return { url, token };
+  cachedCredentials = { url, token };
+  return cachedCredentials;
+}
+
+/**
+ * Validate credentials before starting indexing
+ */
+export function validateCredentials(): boolean {
+  try {
+    getCredentials();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -79,9 +99,11 @@ async function upsertVectors(
     body: JSON.stringify(vectors),
   });
 
+  // Always consume response body to prevent memory leaks
+  const responseText = await response.text();
+
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Upstash upsert failed: ${response.status} - ${error}`);
+    throw new Error(`Upstash upsert failed: ${response.status} - ${responseText}`);
   }
 }
 

@@ -13,7 +13,7 @@
 
 import "dotenv/config";
 import { scrapeMultipleUrls } from "./scrapers/cheerio-scraper.js";
-import { indexMultipleContents } from "./indexer/upstash-indexer.js";
+import { indexMultipleContents, validateCredentials } from "./indexer/upstash-indexer.js";
 import { markJobStarted, markJobCompleted } from "./indexer/redis-status.js";
 import type { CallbackPayload, ScrapedContent } from "./types.js";
 
@@ -167,6 +167,17 @@ async function main() {
   console.log(`   Concurrency: ${args.concurrency}`);
   if (args.jobId) console.log(`   Job ID: ${args.jobId}`);
   if (args.callbackUrl) console.log(`   Callback: ${args.callbackUrl}`);
+
+  // Validate Upstash credentials before starting
+  if (!validateCredentials()) {
+    console.error("\n❌ Upstash Vector credentials not found!");
+    console.error(
+      "   Set UPSTASH_VECTOR_REST_URL and UPSTASH_VECTOR_REST_TOKEN environment variables."
+    );
+    console.error("   Create a .env file from env.example.txt or set them in your environment.");
+    process.exit(1);
+  }
+  console.log(`   ✅ Upstash credentials: configured`);
 
   console.log("\n───────────────────────────────────────────────────────────────");
   console.log("  📥 Starting Scrape");
