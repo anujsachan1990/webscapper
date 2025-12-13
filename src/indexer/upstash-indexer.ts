@@ -1,68 +1,88 @@
 /**
- * Upstash Vector Indexer
+ * Upstash Vector Indexer (Lightweight REST API)
  *
+ * Uses direct REST API calls instead of SDK to minimize memory usage.
  * Indexes scraped content into Upstash Vector database.
- * Handles chunking, embedding, and upsert operations.
  */
 
-import { Index } from "@upstash/vector";
 import type { ScrapedContent, IndexOptions } from "../types.js";
 
-// Upstash Vector client (initialized lazily)
-let vectorIndex: Index | null = null;
+// Get Upstash credentials
+function getCredentials() {
+  const url = process.env.UPSTASH_VECTOR_REST_URL;
+  const token = process.env.UPSTASH_VECTOR_REST_TOKEN;
 
-function getVectorIndex(): Index {
-  if (!vectorIndex) {
-    const url = process.env.UPSTASH_VECTOR_REST_URL;
-    const token = process.env.UPSTASH_VECTOR_REST_TOKEN;
-
-    if (!url || !token) {
-      throw new Error(
-        "Upstash Vector credentials not found. Set UPSTASH_VECTOR_REST_URL and UPSTASH_VECTOR_REST_TOKEN."
-      );
-    }
-
-    vectorIndex = new Index({ url, token });
+  if (!url || !token) {
+    throw new Error(
+      "Upstash Vector credentials not found. Set UPSTASH_VECTOR_REST_URL and UPSTASH_VECTOR_REST_TOKEN."
+    );
   }
-  return vectorIndex;
+
+  return { url, token };
 }
 
 /**
  * Split content into chunks for vector storage
  */
-function chunkContent(
-  content: string,
-  chunkSize = 1000,
-  chunkOverlap = 200
-): string[] {
+function chunkContent(content: string, chunkSize = 800, chunkOverlap = 100): string[] {
   const chunks: string[] = [];
   let start = 0;
 
-  while (start < content.length) {
-    const end = Math.min(start + chunkSize, content.length);
-    const chunk = content.slice(start, end).trim();
+  // Limit total content to prevent memory issues
+  const limitedContent = content.slice(0, 50000);
+
+  while (start < limitedContent.length) {
+    const end = Math.min(start + chunkSize, limitedContent.length);
+    const chunk = limitedContent.slice(start, end).trim();
 
     if (chunk.length > 50) {
       chunks.push(chunk);
     }
 
     start = end - chunkOverlap;
-    if (start >= content.length - 50) break;
+    if (start >= limitedContent.length - 50) break;
   }
 
-  return chunks;
+  // Limit number of chunks per page
+  return chunks.slice(0, 20);
 }
 
 /**
  * Generate a unique ID for a chunk
  */
 function generateChunkId(url: string, chunkIndex: number, brandSlug: string): string {
-  // Create a simple hash from URL
   const urlHash = url
     .replace(/https?:\/\//, "")
     .replace(/[^a-zA-Z0-9]/g, "-")
     .slice(0, 50);
   return `${brandSlug}_${urlHash}_chunk_${chunkIndex}`;
+}
+
+/**
+ * Upsert vectors using REST API (lightweight)
+ */
+async function upsertVectors(
+  vectors: Array<{
+    id: string;
+    data: string;
+    metadata: Record<string, unknown>;
+  }>
+): Promise<void> {
+  const { url, token } = getCredentials();
+
+  const response = await fetch(`${url}/upsert-data`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(vectors),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Upstash upsert failed: ${response.status} - ${error}`);
+  }
 }
 
 /**
@@ -73,9 +93,7 @@ export async function indexContent(
   options: IndexOptions
 ): Promise<{ success: boolean; chunksIndexed: number; error?: string }> {
   try {
-    const { brandSlug, chunkSize = 1000, chunkOverlap = 200 } = options;
-
-    const index = getVectorIndex();
+    const { brandSlug, chunkSize = 800, chunkOverlap = 100 } = options;
 
     // Combine title, description, and content
     const fullContent = [content.title, content.description, content.content]
@@ -90,25 +108,30 @@ export async function indexContent(
       return { success: true, chunksIndexed: 0 };
     }
 
-    // Prepare vectors for upsert
-    const vectors = chunks.map((chunk, i) => ({
-      id: generateChunkId(content.url, i, brandSlug),
-      data: chunk, // Upstash will embed this automatically
-      metadata: {
-        url: content.url,
-        title: content.title,
-        brandSlug,
-        chunkIndex: i,
-        totalChunks: chunks.length,
-        timestamp: content.timestamp,
-      },
-    }));
+    console.log(`   📦 Processing ${chunks.length} chunks for: ${content.url}`);
 
-    // Upsert in batches of 100
-    const batchSize = 100;
-    for (let i = 0; i < vectors.length; i += batchSize) {
-      const batch = vectors.slice(i, i + batchSize);
-      await index.upsert(batch);
+    // Process chunks one at a time to minimize memory
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const vector = {
+        id: generateChunkId(content.url, i, brandSlug),
+        data: chunk,
+        metadata: {
+          url: content.url,
+          title: content.title,
+          brandSlug,
+          chunkIndex: i,
+          totalChunks: chunks.length,
+          timestamp: content.timestamp,
+        },
+      };
+
+      await upsertVectors([vector]);
+
+      // Small delay between chunks
+      if (i < chunks.length - 1) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
     }
 
     console.log(`   ✅ Indexed ${chunks.length} chunks for: ${content.url}`);
@@ -151,26 +174,14 @@ export async function indexMultipleContents(
         errors.push(`${content.url}: ${result.error}`);
       }
     }
+
+    // Force garbage collection hint
+    if (global.gc) {
+      global.gc();
+    }
   }
 
   return { totalIndexed, totalChunks, failed, errors };
-}
-
-/**
- * Delete all vectors for a specific brand
- */
-export async function deleteByBrand(brandSlug: string): Promise<void> {
-  console.log(`🗑️  Deleting all vectors for brand: ${brandSlug}`);
-
-  const index = getVectorIndex();
-
-  // Note: Upstash Vector doesn't support metadata-based deletion directly
-  // You would need to track IDs or use namespaces
-  // For now, we'll log a warning
-  console.warn(
-    `   ⚠️  Bulk deletion by brand requires tracking IDs or using namespaces. ` +
-      `Consider clearing the entire index or implementing ID tracking.`
-  );
 }
 
 /**
@@ -180,11 +191,21 @@ export async function getIndexStats(): Promise<{
   totalVectors: number;
   dimension: number;
 }> {
-  const index = getVectorIndex();
-  const info = await index.info();
+  const { url, token } = getCredentials();
+
+  const response = await fetch(`${url}/info`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to get index info: ${response.status}`);
+  }
+
+  const data = await response.json();
   return {
-    totalVectors: info.vectorCount,
-    dimension: info.dimension,
+    totalVectors: data.result?.vectorCount || 0,
+    dimension: data.result?.dimension || 0,
   };
 }
-

@@ -1,138 +1,82 @@
 /**
- * Redis Job Status Tracker
+ * Redis Job Status Tracker (Lightweight REST API)
  *
- * Tracks scraping job status in Upstash Redis.
+ * Uses direct REST API calls to minimize memory usage.
  * Optional - only used when Redis is configured.
  */
 
-import { Redis } from "@upstash/redis";
 import type { JobStatus } from "../types.js";
-
-let redisClient: Redis | null = null;
-
-function getRedis(): Redis | null {
-  if (redisClient === null) {
-    const url = process.env.UPSTASH_REDIS_REST_URL;
-    const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-
-    if (!url || !token) {
-      console.log("   ℹ️  Redis not configured. Job status tracking disabled.");
-      return null;
-    }
-
-    redisClient = new Redis({ url, token });
-  }
-  return redisClient;
-}
 
 const TTL = 86400; // 24 hours
 
-/**
- * Update job status in Redis
- */
-export async function updateJobStatus(
-  jobId: string,
-  updates: Partial<JobStatus>
-): Promise<void> {
-  const redis = getRedis();
-  if (!redis) return;
-
-  const promises: Promise<unknown>[] = [];
-
-  if (updates.status) {
-    promises.push(
-      redis.set(`scrape-job:${jobId}:status`, updates.status),
-      redis.expire(`scrape-job:${jobId}:status`, TTL)
-    );
-  }
-
-  if (updates.indexed !== undefined) {
-    promises.push(
-      redis.set(`scrape-job:${jobId}:indexed`, updates.indexed),
-      redis.expire(`scrape-job:${jobId}:indexed`, TTL)
-    );
-  }
-
-  if (updates.failed !== undefined) {
-    promises.push(
-      redis.set(`scrape-job:${jobId}:failed`, updates.failed),
-      redis.expire(`scrape-job:${jobId}:failed`, TTL)
-    );
-  }
-
-  if (updates.total !== undefined) {
-    promises.push(
-      redis.set(`scrape-job:${jobId}:total`, updates.total),
-      redis.expire(`scrape-job:${jobId}:total`, TTL)
-    );
-  }
-
-  if (updates.startedAt) {
-    promises.push(
-      redis.set(`scrape-job:${jobId}:started_at`, updates.startedAt),
-      redis.expire(`scrape-job:${jobId}:started_at`, TTL)
-    );
-  }
-
-  if (updates.completedAt) {
-    promises.push(
-      redis.set(`scrape-job:${jobId}:completed_at`, updates.completedAt),
-      redis.expire(`scrape-job:${jobId}:completed_at`, TTL)
-    );
-  }
-
-  if (updates.error) {
-    promises.push(
-      redis.set(`scrape-job:${jobId}:error`, updates.error),
-      redis.expire(`scrape-job:${jobId}:error`, TTL)
-    );
-  }
-
-  await Promise.all(promises);
+function getCredentials() {
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  return url && token ? { url, token } : null;
 }
 
 /**
- * Get job status from Redis
+ * Execute Redis command via REST API
  */
-export async function getJobStatus(jobId: string): Promise<JobStatus | null> {
-  const redis = getRedis();
-  if (!redis) return null;
+async function redisCommand(command: string[]): Promise<unknown> {
+  const creds = getCredentials();
+  if (!creds) return null;
 
-  const [status, indexed, failed, total, startedAt, completedAt, error] = await Promise.all([
-    redis.get<string>(`scrape-job:${jobId}:status`),
-    redis.get<number>(`scrape-job:${jobId}:indexed`),
-    redis.get<number>(`scrape-job:${jobId}:failed`),
-    redis.get<number>(`scrape-job:${jobId}:total`),
-    redis.get<string>(`scrape-job:${jobId}:started_at`),
-    redis.get<string>(`scrape-job:${jobId}:completed_at`),
-    redis.get<string>(`scrape-job:${jobId}:error`),
-  ]);
+  try {
+    const response = await fetch(creds.url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${creds.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(command),
+    });
 
-  if (!status) return null;
+    if (!response.ok) {
+      console.warn(`Redis command failed: ${response.status}`);
+      return null;
+    }
 
-  return {
-    jobId,
-    status: status as JobStatus["status"],
-    indexed: indexed ?? 0,
-    failed: failed ?? 0,
-    total: total ?? 0,
-    startedAt: startedAt ?? undefined,
-    completedAt: completedAt ?? undefined,
-    error: error ?? undefined,
-  };
+    const data = await response.json();
+    return data.result;
+  } catch (error) {
+    console.warn("Redis command error:", error);
+    return null;
+  }
+}
+
+/**
+ * Set a key with TTL
+ */
+async function setWithTTL(key: string, value: string | number): Promise<void> {
+  await redisCommand(["SET", key, String(value), "EX", String(TTL)]);
+}
+
+/**
+ * Get a key value
+ */
+async function get(key: string): Promise<string | null> {
+  const result = await redisCommand(["GET", key]);
+  return result as string | null;
 }
 
 /**
  * Mark job as started
  */
 export async function markJobStarted(jobId: string, total: number): Promise<void> {
-  await updateJobStatus(jobId, {
-    status: "running",
-    total,
-    indexed: 0,
-    failed: 0,
-    startedAt: new Date().toISOString(),
-  });
+  const creds = getCredentials();
+  if (!creds) {
+    console.log("   ℹ️  Redis not configured. Job status tracking disabled.");
+    return;
+  }
+
+  await Promise.all([
+    setWithTTL(`scrape-job:${jobId}:status`, "running"),
+    setWithTTL(`scrape-job:${jobId}:total`, total),
+    setWithTTL(`scrape-job:${jobId}:indexed`, 0),
+    setWithTTL(`scrape-job:${jobId}:failed`, 0),
+    setWithTTL(`scrape-job:${jobId}:started_at`, new Date().toISOString()),
+  ]);
 }
 
 /**
@@ -143,31 +87,60 @@ export async function markJobCompleted(
   indexed: number,
   failed: number
 ): Promise<void> {
-  await updateJobStatus(jobId, {
-    status: failed > indexed ? "failed" : "completed",
-    indexed,
-    failed,
-    completedAt: new Date().toISOString(),
-  });
+  const creds = getCredentials();
+  if (!creds) return;
+
+  const status = failed > indexed ? "failed" : "completed";
+
+  await Promise.all([
+    setWithTTL(`scrape-job:${jobId}:status`, status),
+    setWithTTL(`scrape-job:${jobId}:indexed`, indexed),
+    setWithTTL(`scrape-job:${jobId}:failed`, failed),
+    setWithTTL(`scrape-job:${jobId}:completed_at`, new Date().toISOString()),
+  ]);
+}
+
+/**
+ * Get job status
+ */
+export async function getJobStatus(jobId: string): Promise<JobStatus | null> {
+  const creds = getCredentials();
+  if (!creds) return null;
+
+  const [status, indexed, failed, total, startedAt, completedAt, error] = await Promise.all([
+    get(`scrape-job:${jobId}:status`),
+    get(`scrape-job:${jobId}:indexed`),
+    get(`scrape-job:${jobId}:failed`),
+    get(`scrape-job:${jobId}:total`),
+    get(`scrape-job:${jobId}:started_at`),
+    get(`scrape-job:${jobId}:completed_at`),
+    get(`scrape-job:${jobId}:error`),
+  ]);
+
+  if (!status) return null;
+
+  return {
+    jobId,
+    status: status as JobStatus["status"],
+    indexed: parseInt(indexed || "0", 10),
+    failed: parseInt(failed || "0", 10),
+    total: parseInt(total || "0", 10),
+    startedAt: startedAt ?? undefined,
+    completedAt: completedAt ?? undefined,
+    error: error ?? undefined,
+  };
 }
 
 /**
  * Increment indexed count
  */
 export async function incrementIndexed(jobId: string): Promise<void> {
-  const redis = getRedis();
-  if (!redis) return;
-
-  await redis.incr(`scrape-job:${jobId}:indexed`);
+  await redisCommand(["INCR", `scrape-job:${jobId}:indexed`]);
 }
 
 /**
  * Increment failed count
  */
 export async function incrementFailed(jobId: string): Promise<void> {
-  const redis = getRedis();
-  if (!redis) return;
-
-  await redis.incr(`scrape-job:${jobId}:failed`);
+  await redisCommand(["INCR", `scrape-job:${jobId}:failed`]);
 }
-
