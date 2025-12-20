@@ -8,7 +8,7 @@
 import type { Browser, Page } from "puppeteer";
 import type { ScrapedContent, ScrapeOptions } from "../types.js";
 
-let puppeteer: typeof import("puppeteer");
+let puppeteer: typeof import("puppeteer").default;
 let browserInstance: Browser | null = null;
 
 async function loadPuppeteer() {
