@@ -8,12 +8,13 @@
 import type { Browser, Page } from "puppeteer";
 import type { ScrapedContent, ScrapeOptions } from "../types.js";
 
-let puppeteer: typeof import("puppeteer").default;
+let puppeteer: any;
 let browserInstance: Browser | null = null;
 
 async function loadPuppeteer() {
   if (!puppeteer) {
-    puppeteer = (await import("puppeteer")).default;
+    const puppeteerModule = await import("puppeteer");
+    puppeteer = puppeteerModule.default || puppeteerModule;
   }
 }
 
