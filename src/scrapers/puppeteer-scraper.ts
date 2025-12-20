@@ -11,6 +11,65 @@ import type { ScrapedContent, ScrapeOptions } from "../types.js";
 let puppeteer: any;
 let browserInstance: Browser | null = null;
 
+/**
+ * Simulate human-like scrolling behavior
+ */
+async function simulateHumanScrolling(page: Page): Promise<void> {
+  const randomDelay = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
+
+  try {
+    // Get page height
+    const pageHeight = await page.evaluate(() => document.body.scrollHeight);
+    const viewportHeight = await page.evaluate(() => window.innerHeight);
+
+    if (pageHeight <= viewportHeight) {
+      return; // No scrolling needed
+    }
+
+    // Simulate multiple scroll actions like a human
+    const scrollSteps = Math.min(5, Math.ceil(pageHeight / viewportHeight));
+
+    for (let i = 0; i < scrollSteps; i++) {
+      const scrollAmount = (pageHeight / scrollSteps) * (i + 1);
+
+      await page.evaluate((scrollTo) => {
+        window.scrollTo({
+          top: scrollTo,
+          behavior: 'smooth'
+        });
+      }, Math.min(scrollAmount, pageHeight - viewportHeight));
+
+      // Random pause between scrolls (500ms - 2s)
+      await new Promise(resolve => setTimeout(resolve, randomDelay(500, 2000)));
+
+      // Sometimes move mouse randomly
+      if (Math.random() > 0.5) {
+        const viewport = await page.viewport();
+        if (viewport) {
+          const x = Math.floor(Math.random() * viewport.width);
+          const y = Math.floor(Math.random() * viewport.height);
+          await page.mouse.move(x, y, { steps: 10 });
+          await new Promise(resolve => setTimeout(resolve, randomDelay(100, 500)));
+        }
+      }
+    }
+
+    // Final scroll to bottom and back up slightly (human behavior)
+    await page.evaluate(() => {
+      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+    });
+    await new Promise(resolve => setTimeout(resolve, randomDelay(1000, 2000)));
+
+    await page.evaluate(() => {
+      window.scrollTo({ top: document.body.scrollHeight * 0.8, behavior: 'smooth' });
+    });
+    await new Promise(resolve => setTimeout(resolve, randomDelay(500, 1000)));
+
+  } catch (error) {
+    console.warn(`   ⚠️  Error during human scrolling simulation:`, error);
+  }
+}
+
 async function loadPuppeteer() {
   if (!puppeteer) {
     const puppeteerModule = await import("puppeteer");
@@ -19,11 +78,11 @@ async function loadPuppeteer() {
 }
 
 /**
- * Get or create a shared browser instance
+ * Get or create a shared browser instance with stealth settings
  */
 async function getBrowser(): Promise<Browser> {
   if (!browserInstance || !browserInstance.connected) {
-    console.log("🚀 Launching headless browser...");
+    console.log("🚀 Launching headless browser with stealth settings...");
 
     await loadPuppeteer();
 
@@ -35,8 +94,40 @@ async function getBrowser(): Promise<Browser> {
         "--disable-dev-shm-usage",
         "--disable-accelerated-2d-canvas",
         "--disable-gpu",
+        "--disable-web-security",
+        "--disable-features=VizDisplayCompositor",
         "--window-size=1920,1080",
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-extensions-http-throttling",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-field-trial-config",
+        "--disable-back-forward-cache",
+        "--disable-hang-monitor",
+        "--disable-ipc-flooding-protection",
+        "--disable-popup-blocking",
+        "--disable-prompt-on-repost",
+        "--force-color-profile=srgb",
+        "--metrics-recording-only",
+        "--no-first-run",
+        "--enable-automation=false",
+        "--password-store=basic",
+        "--use-mock-keychain",
+        "--no-default-browser-check",
+        "--no-first-run",
+        "--mute-audio",
+        "--disable-sync",
+        "--disable-translate",
+        "--hide-scrollbars",
+        "--metrics-recording-only",
+        "--no-crash-upload",
+        "--disable-default-apps",
+        "--disable-infobars",
       ],
+      ignoreDefaultArgs: ["--enable-automation"],
+      ignoreHTTPSErrors: true,
     });
   }
   return browserInstance!;
@@ -68,55 +159,139 @@ export async function scrapeWithPuppeteer(
     const browser = await getBrowser();
     page = await browser.newPage();
 
-    await page.setUserAgent(
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-    );
+    // Random user agents to avoid detection
+    const userAgents = [
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
+    ];
+    const randomUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
 
-    await page.setViewport({ width: 1920, height: 1080 });
+    await page.setUserAgent(randomUserAgent);
 
-    // Block only unnecessary resources (keep images for extraction)
+    // Random viewport sizes to appear more human
+    const viewports = [
+      { width: 1920, height: 1080 },
+      { width: 1366, height: 768 },
+      { width: 1536, height: 864 },
+      { width: 1440, height: 900 },
+    ];
+    const randomViewport = viewports[Math.floor(Math.random() * viewports.length)];
+    await page.setViewport(randomViewport);
+
+    // Hide automation indicators
+    await page.evaluateOnNewDocument(() => {
+      // Remove webdriver property
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => undefined,
+      });
+
+      // Mock languages and plugins
+      Object.defineProperty(navigator, 'languages', {
+        get: () => ['en-US', 'en'],
+      });
+
+      Object.defineProperty(navigator, 'plugins', {
+        get: () => [1, 2, 3, 4, 5],
+      });
+
+      // Mock hardware concurrency
+      Object.defineProperty(navigator, 'hardwareConcurrency', {
+        get: () => 4,
+      });
+
+      // Mock device memory
+      Object.defineProperty(navigator, 'deviceMemory', {
+        get: () => 8,
+      });
+    });
+
+    // Enhanced request interception with better filtering
     await page.setRequestInterception(true);
     page.on("request", (req) => {
       const resourceType = req.resourceType();
-      // Only block fonts and media (videos/audio), but allow images
-      if (["font", "media"].includes(resourceType)) {
+      const url = req.url();
+
+      // Block unnecessary resources but allow what's needed for proper page loading
+      if (["font", "media", "websocket", "other"].includes(resourceType)) {
         req.abort();
+      } else if (url.includes("google-analytics.com") || url.includes("googletagmanager.com")) {
+        req.abort(); // Block analytics that might detect bots
       } else {
         req.continue();
       }
     });
 
-    // Try with networkidle2 first, fall back to domcontentloaded if timeout
+    // Simulate human-like behavior with random delays
+    const randomDelay = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
+
+    console.log(`   🤖 Simulating human behavior...`);
+
+    // Navigate with human-like timing
     try {
       await page.goto(url, {
-        waitUntil: "networkidle2",
+        waitUntil: "domcontentloaded",
         timeout,
       });
-    } catch (navError) {
-      // If networkidle2 times out, retry with less strict wait condition
-      if (navError instanceof Error && navError.message.includes("timeout")) {
-        console.log(`   ⚠️  networkidle2 timeout, retrying with domcontentloaded...`);
-        await page.goto(url, {
-          waitUntil: "domcontentloaded",
-          timeout,
-        });
-        // Give some time for JS to execute
-        await new Promise((resolve) => setTimeout(resolve, 3000));
-      } else {
-        throw navError;
-      }
-    }
 
-    // Scroll to trigger lazy loading
-    await page.evaluate(() => {
-      return new Promise<void>((resolve) => {
-        window.scrollTo(0, document.body.scrollHeight / 2);
-        setTimeout(() => {
-          window.scrollTo(0, document.body.scrollHeight);
-          setTimeout(resolve, 1000);
-        }, 500);
+      // Random delay before interacting (1-3 seconds)
+      await new Promise(resolve => setTimeout(resolve, randomDelay(1000, 3000)));
+
+      // Check if Cloudflare challenge is present
+      const isCloudflareChallenge = await page.evaluate(() => {
+        const bodyText = document.body?.innerText || "";
+        return bodyText.includes("Cloudflare") ||
+               bodyText.includes("Verify you are human") ||
+               bodyText.includes("Checking your browser") ||
+               document.title.includes("Just a moment");
       });
-    });
+
+      if (isCloudflareChallenge) {
+        console.log(`   🛡️  Cloudflare challenge detected, waiting for resolution...`);
+
+        // Wait longer for Cloudflare to resolve (up to 30 seconds)
+        let challengeResolved = false;
+        let attempts = 0;
+        const maxAttempts = 30;
+
+        while (!challengeResolved && attempts < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          attempts++;
+
+          challengeResolved = await page.evaluate(() => {
+            const bodyText = document.body?.innerText || "";
+            return !bodyText.includes("Verify you are human") &&
+                   !bodyText.includes("Checking your browser") &&
+                   !document.title.includes("Just a moment");
+          });
+
+          if (attempts % 5 === 0) {
+            console.log(`   ⏳ Still waiting for Cloudflare... (${attempts}s)`);
+          }
+        }
+
+        if (!challengeResolved) {
+          console.log(`   ❌ Cloudflare challenge not resolved within timeout`);
+          return null;
+        }
+
+        console.log(`   ✅ Cloudflare challenge passed!`);
+      }
+
+      // Wait for network to be mostly idle
+      await new Promise(resolve => setTimeout(resolve, 3000)); // Wait for network activity to settle
+
+      // Simulate human scrolling behavior
+      await simulateHumanScrolling(page);
+
+      // Random delay after scrolling (2-5 seconds)
+      await new Promise(resolve => setTimeout(resolve, randomDelay(2000, 5000)));
+
+    } catch (navError) {
+      console.error(`   ❌ Navigation error:`, navError);
+      throw navError;
+    }
 
     // Extract content
     const result = await page.evaluate(() => {
