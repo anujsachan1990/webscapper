@@ -313,8 +313,13 @@ export async function scrapeWithPuppeteer(
         ".ad",
       ];
 
+      // Convert NodeList to array to avoid DOM mutation issues
       removeSelectors.forEach((selector) => {
-        document.querySelectorAll(selector).forEach((el) => el.remove());
+        Array.from(document.querySelectorAll(selector)).forEach((el) => {
+          if (el.parentNode) {
+            el.parentNode.removeChild(el);
+          }
+        });
       });
 
       // Extract table data first (preserving structure)

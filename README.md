@@ -170,6 +170,41 @@ If you encounter "JavaScript heap out of memory" errors:
 
 4. **Use Cheerio instead of Puppeteer:** Puppeteer requires more memory due to the browser instance
 
+### HTTP 403 Forbidden Errors or Cloudflare Challenges
+
+If you're getting 403 Forbidden errors or Cloudflare "Verify you are human" challenges (like with Bunnings):
+
+**🔥 Best Solution: Use Firecrawl Engine**
+Firecrawl is specifically designed to handle bot protection and Cloudflare challenges:
+
+```bash
+npm run scrape -- --engine=firecrawl --urls="https://www.bunnings.com.au/..."
+```
+
+**Requirements:**
+- Set `FIRECRAWL_API_KEY` in your GitHub repository secrets
+- Firecrawl handles JavaScript rendering, bot detection, and content extraction automatically
+- **Most reliable option for protected sites**
+
+**Alternative: Enhanced Puppeteer**
+If Firecrawl isn't available, use the enhanced Puppeteer with stealth techniques:
+
+```bash
+npm run scrape -- --engine=puppeteer --urls="https://www.bunnings.com.au/..."
+```
+
+The enhanced Puppeteer now includes:
+- Randomized user agents and browser fingerprints
+- Human-like scrolling and mouse movement simulation
+- Cloudflare challenge detection and waiting
+- Stealth browser arguments to avoid detection
+
+**Last Resort: Cheerio (Fast but Limited)**
+```bash
+npm run scrape -- --engine=cheerio --urls="https://www.bunnings.com.au/..."
+```
+Cheerio is fastest but most likely to be blocked by modern bot protection.
+
 ## Callback Payload
 
 When scraping completes, a POST request is sent to the callback URL:
