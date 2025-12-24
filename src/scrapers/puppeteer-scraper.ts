@@ -9,13 +9,16 @@ import type { Browser, Page } from "puppeteer";
 import type { ScrapedContent, ScrapeOptions } from "../types.js";
 
 let puppeteer: any;
-let browserInstance: Browser | null = null;
+let puppeteerExtra: any;
+let StealthPlugin: any;
+let browserInstance: any = null;
 
 /**
  * Simulate human-like scrolling behavior
  */
 async function simulateHumanScrolling(page: Page): Promise<void> {
-  const randomDelay = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
+  const randomDelay = (min: number, max: number) =>
+    Math.floor(Math.random() * (max - min + 1)) + min;
 
   try {
     // Get page height
@@ -32,15 +35,18 @@ async function simulateHumanScrolling(page: Page): Promise<void> {
     for (let i = 0; i < scrollSteps; i++) {
       const scrollAmount = (pageHeight / scrollSteps) * (i + 1);
 
-      await page.evaluate((scrollTo) => {
-        window.scrollTo({
-          top: scrollTo,
-          behavior: 'smooth'
-        });
-      }, Math.min(scrollAmount, pageHeight - viewportHeight));
+      await page.evaluate(
+        (scrollTo) => {
+          window.scrollTo({
+            top: scrollTo,
+            behavior: "smooth",
+          });
+        },
+        Math.min(scrollAmount, pageHeight - viewportHeight)
+      );
 
       // Random pause between scrolls (500ms - 2s)
-      await new Promise(resolve => setTimeout(resolve, randomDelay(500, 2000)));
+      await new Promise((resolve) => setTimeout(resolve, randomDelay(500, 2000)));
 
       // Sometimes move mouse randomly
       if (Math.random() > 0.5) {
@@ -49,22 +55,21 @@ async function simulateHumanScrolling(page: Page): Promise<void> {
           const x = Math.floor(Math.random() * viewport.width);
           const y = Math.floor(Math.random() * viewport.height);
           await page.mouse.move(x, y, { steps: 10 });
-          await new Promise(resolve => setTimeout(resolve, randomDelay(100, 500)));
+          await new Promise((resolve) => setTimeout(resolve, randomDelay(100, 500)));
         }
       }
     }
 
     // Final scroll to bottom and back up slightly (human behavior)
     await page.evaluate(() => {
-      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+      window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
     });
-    await new Promise(resolve => setTimeout(resolve, randomDelay(1000, 2000)));
+    await new Promise((resolve) => setTimeout(resolve, randomDelay(1000, 2000)));
 
     await page.evaluate(() => {
-      window.scrollTo({ top: document.body.scrollHeight * 0.8, behavior: 'smooth' });
+      window.scrollTo({ top: document.body.scrollHeight * 0.8, behavior: "smooth" });
     });
-    await new Promise(resolve => setTimeout(resolve, randomDelay(500, 1000)));
-
+    await new Promise((resolve) => setTimeout(resolve, randomDelay(500, 1000)));
   } catch (error) {
     console.warn(`   ⚠️  Error during human scrolling simulation:`, error);
   }
@@ -74,6 +79,24 @@ async function loadPuppeteer() {
   if (!puppeteer) {
     const puppeteerModule = await import("puppeteer");
     puppeteer = puppeteerModule.default || puppeteerModule;
+
+    try {
+      // Load puppeteer-extra and stealth plugin for better bot detection evasion
+      // @ts-ignore - Optional dependency
+      const puppeteerExtraModule = await import("puppeteer-extra");
+      puppeteerExtra = puppeteerExtraModule.default || puppeteerExtraModule;
+
+      // @ts-ignore - Optional dependency
+      const stealthModule = await import("puppeteer-extra-plugin-stealth");
+      StealthPlugin = stealthModule.default || stealthModule;
+
+      // Use puppeteer-extra with stealth plugin
+      puppeteerExtra.use(StealthPlugin());
+      puppeteer = puppeteerExtra;
+      console.log("✅ Using puppeteer-extra with stealth plugin for enhanced bot evasion");
+    } catch (error) {
+      console.log("⚠️  puppeteer-extra not available, using basic stealth measures");
+    }
   }
 }
 
@@ -94,39 +117,18 @@ async function getBrowser(): Promise<Browser> {
         "--disable-dev-shm-usage",
         "--disable-accelerated-2d-canvas",
         "--disable-gpu",
+        "--window-size=1920,1080",
+        // Let puppeteer-extra stealth plugin handle most stealth measures
         "--disable-web-security",
         "--disable-features=VizDisplayCompositor",
-        "--window-size=1920,1080",
-        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "--disable-blink-features=AutomationControlled",
-        "--disable-extensions-http-throttling",
-        "--disable-background-timer-throttling",
-        "--disable-backgrounding-occluded-windows",
-        "--disable-renderer-backgrounding",
-        "--disable-field-trial-config",
-        "--disable-back-forward-cache",
-        "--disable-hang-monitor",
-        "--disable-ipc-flooding-protection",
-        "--disable-popup-blocking",
-        "--disable-prompt-on-repost",
-        "--force-color-profile=srgb",
-        "--metrics-recording-only",
-        "--no-first-run",
-        "--enable-automation=false",
-        "--password-store=basic",
-        "--use-mock-keychain",
-        "--no-default-browser-check",
         "--no-first-run",
         "--mute-audio",
         "--disable-sync",
         "--disable-translate",
         "--hide-scrollbars",
-        "--metrics-recording-only",
-        "--no-crash-upload",
         "--disable-default-apps",
         "--disable-infobars",
       ],
-      ignoreDefaultArgs: ["--enable-automation"],
       ignoreHTTPSErrors: true,
     });
   }
@@ -180,32 +182,7 @@ export async function scrapeWithPuppeteer(
     const randomViewport = viewports[Math.floor(Math.random() * viewports.length)];
     await page.setViewport(randomViewport);
 
-    // Hide automation indicators
-    await page.evaluateOnNewDocument(() => {
-      // Remove webdriver property
-      Object.defineProperty(navigator, 'webdriver', {
-        get: () => undefined,
-      });
-
-      // Mock languages and plugins
-      Object.defineProperty(navigator, 'languages', {
-        get: () => ['en-US', 'en'],
-      });
-
-      Object.defineProperty(navigator, 'plugins', {
-        get: () => [1, 2, 3, 4, 5],
-      });
-
-      // Mock hardware concurrency
-      Object.defineProperty(navigator, 'hardwareConcurrency', {
-        get: () => 4,
-      });
-
-      // Mock device memory
-      Object.defineProperty(navigator, 'deviceMemory', {
-        get: () => 8,
-      });
-    });
+    // puppeteer-extra-plugin-stealth handles automation indicator hiding automatically
 
     // Enhanced request interception with better filtering
     await page.setRequestInterception(true);
@@ -224,7 +201,8 @@ export async function scrapeWithPuppeteer(
     });
 
     // Simulate human-like behavior with random delays
-    const randomDelay = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
+    const randomDelay = (min: number, max: number) =>
+      Math.floor(Math.random() * (max - min + 1)) + min;
 
     console.log(`   🤖 Simulating human behavior...`);
 
@@ -236,15 +214,17 @@ export async function scrapeWithPuppeteer(
       });
 
       // Random delay before interacting (1-3 seconds)
-      await new Promise(resolve => setTimeout(resolve, randomDelay(1000, 3000)));
+      await new Promise((resolve) => setTimeout(resolve, randomDelay(1000, 3000)));
 
       // Check if Cloudflare challenge is present
       const isCloudflareChallenge = await page.evaluate(() => {
         const bodyText = document.body?.innerText || "";
-        return bodyText.includes("Cloudflare") ||
-               bodyText.includes("Verify you are human") ||
-               bodyText.includes("Checking your browser") ||
-               document.title.includes("Just a moment");
+        return (
+          bodyText.includes("Cloudflare") ||
+          bodyText.includes("Verify you are human") ||
+          bodyText.includes("Checking your browser") ||
+          document.title.includes("Just a moment")
+        );
       });
 
       if (isCloudflareChallenge) {
@@ -256,14 +236,16 @@ export async function scrapeWithPuppeteer(
         const maxAttempts = 30;
 
         while (!challengeResolved && attempts < maxAttempts) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          await new Promise((resolve) => setTimeout(resolve, 1000));
           attempts++;
 
           challengeResolved = await page.evaluate(() => {
             const bodyText = document.body?.innerText || "";
-            return !bodyText.includes("Verify you are human") &&
-                   !bodyText.includes("Checking your browser") &&
-                   !document.title.includes("Just a moment");
+            return (
+              !bodyText.includes("Verify you are human") &&
+              !bodyText.includes("Checking your browser") &&
+              !document.title.includes("Just a moment")
+            );
           });
 
           if (attempts % 5 === 0) {
@@ -280,14 +262,13 @@ export async function scrapeWithPuppeteer(
       }
 
       // Wait for network to be mostly idle
-      await new Promise(resolve => setTimeout(resolve, 3000)); // Wait for network activity to settle
+      await new Promise((resolve) => setTimeout(resolve, 3000)); // Wait for network activity to settle
 
       // Simulate human scrolling behavior
       await simulateHumanScrolling(page);
 
       // Random delay after scrolling (2-5 seconds)
-      await new Promise(resolve => setTimeout(resolve, randomDelay(2000, 5000)));
-
+      await new Promise((resolve) => setTimeout(resolve, randomDelay(2000, 5000)));
     } catch (navError) {
       console.error(`   ❌ Navigation error:`, navError);
       throw navError;

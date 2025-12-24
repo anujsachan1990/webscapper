@@ -66,6 +66,10 @@ export async function scrapeWithCheerio(
   try {
     console.log(`📄 Scraping (Cheerio): ${url}`);
 
+    // Add random delay to avoid rate limiting (1-3 seconds)
+    const delay = Math.random() * 2000 + 1000;
+    await sleep(delay);
+
     // Randomize user agent to avoid detection
     const userAgents = [
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -73,37 +77,70 @@ export async function scrapeWithCheerio(
       "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/121.0",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
     ];
     const randomUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
 
+    // Generate more realistic referer based on URL
+    const getReferer = (targetUrl: string) => {
+      try {
+        const urlObj = new URL(targetUrl);
+        // For product pages, refer from the main site
+        if (targetUrl.includes('/product/')) {
+          return `${urlObj.protocol}//${urlObj.host}/`;
+        }
+        // For blog pages, refer from home
+        if (targetUrl.includes('/when-should-') || targetUrl.includes('/blog')) {
+          return `${urlObj.protocol}//${urlObj.host}/`;
+        }
+        // For other pages, sometimes refer from search engines
+        const referers = [
+          `${urlObj.protocol}//${urlObj.host}/`,
+          "https://www.google.com/",
+          "https://www.bing.com/",
+          undefined, // Sometimes no referer
+        ];
+        return referers[Math.floor(Math.random() * referers.length)];
+      } catch {
+        return undefined;
+      }
+    };
+
+    const referer = getReferer(url);
+
     const response = await retryWithBackoff(async () => {
+      const headers: Record<string, string> = {
+        "User-Agent": randomUserAgent,
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "max-age=0",
+        "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+        DNT: "1",
+        // Additional headers to appear more like a real browser
+        "Sec-Ch-Ua-Arch": '"x86"',
+        "Sec-Ch-Ua-Bitness": '"64"',
+        "Sec-Ch-Ua-Full-Version": '"120.0.6099.109"',
+        "Sec-Ch-Ua-Full-Version-List": '"Not_A Brand";v="8.0.0.0", "Chromium";v="120.0.6099.109", "Google Chrome";v="120.0.6099.109"',
+        "Sec-Ch-Ua-Model": '""',
+        "Sec-Ch-Ua-Platform-Version": '"10.0.0"',
+      };
+
+      // Add referer conditionally
+      if (referer) {
+        headers.Referer = referer;
+      }
+
       return await fetch(url, {
-        headers: {
-          "User-Agent": randomUserAgent,
-          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-          "Accept-Language": "en-US,en;q=0.9",
-          "Accept-Encoding": "gzip, deflate, br",
-          "Cache-Control": "max-age=0",
-          "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-          "Sec-Ch-Ua-Mobile": "?0",
-          "Sec-Ch-Ua-Platform": '"Windows"',
-          "Sec-Fetch-Dest": "document",
-          "Sec-Fetch-Mode": "navigate",
-          "Sec-Fetch-Site": "none",
-          "Sec-Fetch-User": "?1",
-          "Upgrade-Insecure-Requests": "1",
-          DNT: "1",
-          // Additional headers to appear more like a real browser
-          "Sec-Purpose": "prefetch",
-          "Sec-Ch-Ua-Arch": '"x86"',
-          "Sec-Ch-Ua-Bitness": '"64"',
-          "Sec-Ch-Ua-Full-Version": '"120.0.6099.109"',
-          "Sec-Ch-Ua-Full-Version-List": '"Not_A Brand";v="8.0.0.0", "Chromium";v="120.0.6099.109", "Google Chrome";v="120.0.6099.109"',
-          "Sec-Ch-Ua-Model": '""',
-          "Sec-Ch-Ua-Platform-Version": '"10.0.0"',
-          // Add referrer for sites that check it
-          "Referer": "https://www.google.com/",
-        },
+        headers,
         signal: AbortSignal.timeout(timeout),
       });
     });
@@ -273,9 +310,10 @@ export async function scrapeMultipleUrls(
 
     results.push(...batchResults.filter((r): r is ScrapedContent => r !== null));
 
-    // Small delay between batches
+    // Longer delay between batches to avoid rate limiting (2-5 seconds)
     if (i + concurrency < urls.length) {
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      const batchDelay = Math.random() * 3000 + 2000; // 2-5 seconds
+      await new Promise((resolve) => setTimeout(resolve, batchDelay));
     }
   }
 

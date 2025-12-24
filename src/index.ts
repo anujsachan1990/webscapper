@@ -238,7 +238,27 @@ async function main() {
       }
       case "cheerio":
       default:
-        scrapedContents = await scrapeMultipleUrls(urls, scrapeOptions);
+        // Try Cheerio first (fast), then fallback to Puppeteer for failed URLs
+        console.log("📄 Trying Cheerio scraper first (fast)...");
+        let cheerioResults = await scrapeMultipleUrls(urls, scrapeOptions);
+        scrapedContents = cheerioResults;
+
+        // Check for 403 failures and retry with Puppeteer
+        const failedUrls = urls.filter(url => !cheerioResults.some(result => result.url === url));
+        if (failedUrls.length > 0) {
+          console.log(`\n🔄 ${failedUrls.length} URLs failed with Cheerio, retrying with Puppeteer...`);
+          try {
+            const puppeteerScraper = await loadPuppeteerScraper();
+            const puppeteerResults = await puppeteerScraper.scrapeMultipleUrls(failedUrls, {
+              ...scrapeOptions,
+              concurrency: 1, // Lower concurrency for Puppeteer to avoid overwhelming
+            });
+            scrapedContents = [...cheerioResults, ...puppeteerResults];
+            console.log(`✅ Puppeteer rescued ${puppeteerResults.length}/${failedUrls.length} URLs`);
+          } catch (error) {
+            console.log("⚠️  Puppeteer fallback failed:", error);
+          }
+        }
         break;
     }
 
