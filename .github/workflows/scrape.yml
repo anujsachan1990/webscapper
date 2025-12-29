@@ -90,6 +90,47 @@ jobs:
         with:
           chrome-version: stable
 
+      - name: Determine URLs for this chunk
+        id: get-urls
+        env:
+          CHUNK_ID: ${{ matrix.chunk }}
+          # All chunk data from payload
+          CHUNK_1: ${{ github.event.client_payload.chunk_1 || '' }}
+          CHUNK_2: ${{ github.event.client_payload.chunk_2 || '' }}
+          CHUNK_3: ${{ github.event.client_payload.chunk_3 || '' }}
+          CHUNK_4: ${{ github.event.client_payload.chunk_4 || '' }}
+          CHUNK_5: ${{ github.event.client_payload.chunk_5 || '' }}
+          CHUNK_6: ${{ github.event.client_payload.chunk_6 || '' }}
+          CHUNK_7: ${{ github.event.client_payload.chunk_7 || '' }}
+          CHUNK_8: ${{ github.event.client_payload.chunk_8 || '' }}
+          CHUNK_9: ${{ github.event.client_payload.chunk_9 || '' }}
+          CHUNK_10: ${{ github.event.client_payload.chunk_10 || '' }}
+          # Fallback for manual triggers
+          MANUAL_URLS: ${{ github.event.inputs.urls_json || '' }}
+        run: |
+          # Select URLs based on chunk ID
+          case "$CHUNK_ID" in
+            1) URLS="$CHUNK_1" ;;
+            2) URLS="$CHUNK_2" ;;
+            3) URLS="$CHUNK_3" ;;
+            4) URLS="$CHUNK_4" ;;
+            5) URLS="$CHUNK_5" ;;
+            6) URLS="$CHUNK_6" ;;
+            7) URLS="$CHUNK_7" ;;
+            8) URLS="$CHUNK_8" ;;
+            9) URLS="$CHUNK_9" ;;
+            10) URLS="$CHUNK_10" ;;
+            *) URLS="" ;;
+          esac
+          
+          # Fallback to manual input if no chunk data (for workflow_dispatch)
+          if [ -z "$URLS" ] && [ -n "$MANUAL_URLS" ]; then
+            URLS="$MANUAL_URLS"
+          fi
+          
+          echo "📋 Chunk $CHUNK_ID URLs: ${URLS:0:100}..." 
+          echo "urls_json=$URLS" >> $GITHUB_OUTPUT
+
       - name: Run Scraper
         env:
           # Set memory limit and enable garbage collection (2GB for Cheerio, 4GB for Puppeteer)
@@ -106,19 +147,8 @@ jobs:
           # Firecrawl API key (for firecrawl engine)
           FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
 
-          # Job parameters (from dispatch or manual input)
-          URLS_JSON: >
-            ${{ matrix.chunk == 1 && (github.event.client_payload.chunk_1 || github.event.inputs.urls_json) ||
-            matrix.chunk == 2 && (github.event.client_payload.chunk_2 || github.event.inputs.urls_json) ||
-            matrix.chunk == 3 && (github.event.client_payload.chunk_3 || github.event.inputs.urls_json) ||
-            matrix.chunk == 4 && (github.event.client_payload.chunk_4 || github.event.inputs.urls_json) ||
-            matrix.chunk == 5 && (github.event.client_payload.chunk_5 || github.event.inputs.urls_json) ||
-            matrix.chunk == 6 && (github.event.client_payload.chunk_6 || github.event.inputs.urls_json) ||
-            matrix.chunk == 7 && (github.event.client_payload.chunk_7 || github.event.inputs.urls_json) ||
-            matrix.chunk == 8 && (github.event.client_payload.chunk_8 || github.event.inputs.urls_json) ||
-            matrix.chunk == 9 && (github.event.client_payload.chunk_9 || github.event.inputs.urls_json) ||
-            matrix.chunk == 10 && (github.event.client_payload.chunk_10 || github.event.inputs.urls_json) ||
-            github.event.inputs.urls_json }}
+          # Job parameters - URLs from previous step
+          URLS_JSON: ${{ steps.get-urls.outputs.urls_json }}
           BRAND_SLUG: ${{ github.event.client_payload.brand_slug || github.event.inputs.brand_slug }}
           JOB_ID: ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
           CALLBACK_URL: ${{ github.event.client_payload.callback_url || '' }}
@@ -133,6 +163,7 @@ jobs:
           echo "   Job ID: $JOB_ID"
           echo "   Engine: $SCRAPER_ENGINE"
           echo "   Memory limit: $NODE_OPTIONS"
+          echo "   URLs count: $(echo "$URLS_JSON" | jq -r 'length' 2>/dev/null || echo 'unknown')"
 
           npm run scrape
 
