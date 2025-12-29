@@ -23,9 +23,19 @@ export interface ScrapeOptions {
 export interface IndexOptions {
   brandSlug: string;
   jobId?: string;
+  /** Chunk size in characters (default: 1000) */
   chunkSize?: number;
+  /** Overlap between chunks in characters (default: 200) */
   chunkOverlap?: number;
 }
+
+/**
+ * Default chunking configuration (matches main app settings)
+ */
+export const DEFAULT_CHUNK_OPTIONS = {
+  chunkSize: 1000,
+  chunkOverlap: 200,
+} as const;
 
 export interface JobStatus {
   jobId: string;

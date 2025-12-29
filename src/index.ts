@@ -46,6 +46,9 @@ interface CliArgs {
   callbackSecret?: string;
   chunkId?: number;
   totalChunks?: number;
+  // Chunking options (for RAG quality tuning)
+  chunkSize?: number;
+  chunkOverlap?: number;
 }
 
 /**
@@ -105,6 +108,13 @@ function parseArgs(): CliArgs {
   if (!parsed.totalChunks && process.env.TOTAL_CHUNKS) {
     parsed.totalChunks = parseInt(process.env.TOTAL_CHUNKS, 10);
   }
+  // Chunking configuration from environment
+  if (!parsed.chunkSize && process.env.CHUNK_SIZE) {
+    parsed.chunkSize = parseInt(process.env.CHUNK_SIZE, 10);
+  }
+  if (!parsed.chunkOverlap && process.env.CHUNK_OVERLAP) {
+    parsed.chunkOverlap = parseInt(process.env.CHUNK_OVERLAP, 10);
+  }
 
   return {
     urls: parsed.urls,
@@ -118,6 +128,8 @@ function parseArgs(): CliArgs {
     callbackSecret: parsed.callbackSecret,
     chunkId: parsed.chunkId,
     totalChunks: parsed.totalChunks,
+    chunkSize: parsed.chunkSize || 1000, // Default 1000 chars (improved from 800)
+    chunkOverlap: parsed.chunkOverlap || 200, // Default 200 chars overlap (20%)
   };
 }
 
@@ -191,6 +203,8 @@ async function main() {
   console.log(`   URLs: ${urls.length}`);
   console.log(`   Concurrency: ${args.concurrency}`);
   console.log(`   Timeout: ${args.timeout}ms`);
+  console.log(`   Chunk Size: ${args.chunkSize} chars`);
+  console.log(`   Chunk Overlap: ${args.chunkOverlap} chars (${((args.chunkOverlap! / args.chunkSize!) * 100).toFixed(0)}%)`);
   if (args.jobId) console.log(`   Job ID: ${args.jobId}`);
   if (args.chunkId && args.totalChunks) {
     console.log(`   Chunk: ${args.chunkId}/${args.totalChunks}`);
@@ -281,10 +295,12 @@ async function main() {
     console.log("  📤 Indexing to Upstash Vector");
     console.log("───────────────────────────────────────────────────────────────\n");
 
-    // Index scraped content
+    // Index scraped content with improved chunking
     const indexResult = await indexMultipleContents(scrapedContents, {
       brandSlug: args.brandSlug,
       jobId: args.jobId,
+      chunkSize: args.chunkSize,
+      chunkOverlap: args.chunkOverlap,
     });
 
     indexed = indexResult.totalIndexed;

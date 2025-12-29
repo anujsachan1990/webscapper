@@ -42,49 +42,105 @@ export function validateCredentials(): boolean {
 }
 
 /**
- * Split content into chunks for vector storage
+ * Default chunking configuration (optimized for RAG quality)
  */
-function chunkContent(content: string, chunkSize = 800, chunkOverlap = 100): string[] {
+const DEFAULT_CHUNK_CONFIG = {
+  chunkSize: 1000, // Smaller chunks for better precision
+  chunkOverlap: 200, // 20% overlap for context preservation
+  maxContentLength: 100000, // 100KB max content
+  maxChunksPerPage: 50, // Allow more chunks for comprehensive indexing
+  minChunkLength: 50, // Minimum viable chunk length
+};
+
+/**
+ * Semantic separators for intelligent chunking (priority order)
+ */
+const SEMANTIC_SEPARATORS = [
+  "\n\n", // Paragraph breaks (highest priority)
+  "\n", // Line breaks
+  ". ", // Sentence endings
+  "! ", // Exclamation sentences
+  "? ", // Question sentences
+  "; ", // Semicolon breaks
+  ", ", // Comma breaks
+  " ", // Word breaks (fallback)
+];
+
+/**
+ * Split content into semantic chunks with overlap for better RAG performance
+ *
+ * Improvements over basic chunking:
+ * - Respects sentence and paragraph boundaries
+ * - Configurable overlap to preserve context between chunks
+ * - Smart boundary detection to avoid splitting mid-sentence
+ */
+function chunkContent(
+  content: string,
+  chunkSize = DEFAULT_CHUNK_CONFIG.chunkSize,
+  chunkOverlap = DEFAULT_CHUNK_CONFIG.chunkOverlap
+): string[] {
   const chunks: string[] = [];
-  let start = 0;
+  const trimmedContent = content.trim();
 
   // Limit total content to prevent memory issues
-  const limitedContent = content.slice(0, 50000);
+  const limitedContent = trimmedContent.slice(0, DEFAULT_CHUNK_CONFIG.maxContentLength);
 
   // If content is shorter than chunk size, return it as a single chunk
   if (limitedContent.length <= chunkSize) {
-    const trimmed = limitedContent.trim();
-    if (trimmed.length > 50) {
-      return [trimmed];
+    if (limitedContent.length >= DEFAULT_CHUNK_CONFIG.minChunkLength) {
+      return [limitedContent];
     }
     return [];
   }
 
-  while (start < limitedContent.length) {
-    const end = Math.min(start + chunkSize, limitedContent.length);
-    const chunk = limitedContent.slice(start, end).trim();
+  let currentIndex = 0;
 
-    if (chunk.length > 50) {
+  while (currentIndex < limitedContent.length) {
+    let chunkEnd = Math.min(currentIndex + chunkSize, limitedContent.length);
+
+    // If not the last chunk, try to break at a semantic boundary
+    if (chunkEnd < limitedContent.length) {
+      const minBreakPosition = currentIndex + chunkSize * 0.5; // Don't break too early
+      let bestBreak = -1;
+
+      // Try each separator in priority order
+      for (const separator of SEMANTIC_SEPARATORS) {
+        const breakPoint = limitedContent.lastIndexOf(separator, chunkEnd);
+        if (breakPoint > minBreakPosition) {
+          bestBreak = breakPoint + separator.length;
+          break; // Use first (highest priority) separator found
+        }
+      }
+
+      if (bestBreak > currentIndex) {
+        chunkEnd = bestBreak;
+      }
+    }
+
+    const chunk = limitedContent.slice(currentIndex, chunkEnd).trim();
+
+    if (chunk.length >= DEFAULT_CHUNK_CONFIG.minChunkLength) {
       chunks.push(chunk);
     }
 
-    // Move forward, ensuring we always make progress
-    const nextStart = end - chunkOverlap;
-    if (nextStart <= start) {
-      // Prevent infinite loop - if overlap would move us backwards or keep us in place, break
-      break;
+    // Move forward, accounting for overlap
+    const nextIndex = chunkEnd - chunkOverlap;
+
+    // Ensure we always make progress to prevent infinite loops
+    if (nextIndex <= currentIndex) {
+      currentIndex = chunkEnd;
+    } else {
+      currentIndex = nextIndex;
     }
 
-    start = nextStart;
-
-    // Break if we're near the end
-    if (start >= limitedContent.length - chunkOverlap) {
+    // Safety check: stop if we've created too many chunks
+    if (chunks.length >= DEFAULT_CHUNK_CONFIG.maxChunksPerPage) {
+      console.log(`   ⚠️  Content truncated at ${DEFAULT_CHUNK_CONFIG.maxChunksPerPage} chunks`);
       break;
     }
   }
 
-  // Limit number of chunks per page
-  return chunks.slice(0, 20);
+  return chunks;
 }
 
 /**
@@ -144,6 +200,23 @@ async function upsertVectors(
 }
 
 /**
+ * Prepare chunk text for embedding with context
+ * Adds title and section information for better retrieval
+ */
+function prepareChunkForEmbedding(
+  title: string,
+  chunk: string,
+  chunkIndex: number,
+  totalChunks: number
+): string {
+  if (totalChunks <= 1) {
+    return `${title}\n\n${chunk}`;
+  }
+  // Add section context for multi-chunk documents
+  return `${title}\n\n[Section ${chunkIndex + 1} of ${totalChunks}]\n\n${chunk}`;
+}
+
+/**
  * Index a single piece of scraped content
  */
 export async function indexContent(
@@ -151,14 +224,16 @@ export async function indexContent(
   options: IndexOptions
 ): Promise<{ success: boolean; chunksIndexed: number; error?: string }> {
   try {
-    const { brandSlug, chunkSize = 800, chunkOverlap = 100 } = options;
+    const {
+      brandSlug,
+      chunkSize = DEFAULT_CHUNK_CONFIG.chunkSize,
+      chunkOverlap = DEFAULT_CHUNK_CONFIG.chunkOverlap,
+    } = options;
 
-    // Combine title, description, and content
-    const fullContent = [content.title, content.description, content.content]
-      .filter(Boolean)
-      .join("\n\n");
+    // Combine title, description, and content for chunking
+    const fullContent = [content.description, content.content].filter(Boolean).join("\n\n");
 
-    // Chunk the content
+    // Chunk the content using semantic chunking
     const chunks = chunkContent(fullContent, chunkSize, chunkOverlap);
 
     if (chunks.length === 0) {
@@ -172,6 +247,9 @@ export async function indexContent(
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
 
+      // Prepare text for embedding with title and section context
+      const textToEmbed = prepareChunkForEmbedding(content.title, chunk, i, chunks.length);
+
       // Build metadata with images (only on first chunk to avoid duplication)
       const metadata: Record<string, unknown> = {
         url: content.url,
@@ -180,11 +258,12 @@ export async function indexContent(
         chunkIndex: i,
         totalChunks: chunks.length,
         timestamp: content.timestamp,
+        contentPreview: chunk.slice(0, 500), // Store preview in metadata
       };
 
       // Add images to first chunk only
       if (i === 0 && content.images && content.images.length > 0) {
-        metadata.images = JSON.stringify(content.images);
+        metadata.images = JSON.stringify(content.images.slice(0, 5)); // Limit to 5 images
         metadata.imageCount = content.images.length;
       }
 
@@ -195,15 +274,15 @@ export async function indexContent(
 
       const vector = {
         id: generateChunkId(content.url, i, brandSlug),
-        data: chunk,
+        data: textToEmbed, // Use prepared text with context
         metadata,
       };
 
       await upsertVectors([vector]);
 
-      // Small delay between chunks
+      // Small delay between chunks to avoid rate limiting
       if (i < chunks.length - 1) {
-        await new Promise((r) => setTimeout(r, 100));
+        await new Promise((r) => setTimeout(r, 50));
       }
     }
 
