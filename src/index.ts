@@ -14,7 +14,7 @@
 import "dotenv/config";
 import { scrapeMultipleUrls } from "./scrapers/cheerio-scraper.js";
 import { indexMultipleContents, validateCredentials } from "./indexer/upstash-indexer.js";
-import { markJobStarted, markJobCompleted } from "./indexer/redis-status.js";
+import { markJobStarted, markJobCompleted, markChunkCompleted } from "./indexer/redis-status.js";
 import type { CallbackPayload, ScrapedContent, ScraperEngine } from "./types.js";
 
 // Dynamic imports to avoid loading unused scrapers
@@ -44,6 +44,8 @@ interface CliArgs {
   timeout?: number;
   callbackUrl?: string;
   callbackSecret?: string;
+  chunkId?: number;
+  totalChunks?: number;
 }
 
 /**
@@ -97,6 +99,12 @@ function parseArgs(): CliArgs {
   if (!parsed.timeout && process.env.SCRAPE_TIMEOUT) {
     parsed.timeout = parseInt(process.env.SCRAPE_TIMEOUT, 10);
   }
+  if (!parsed.chunkId && process.env.CHUNK_ID) {
+    parsed.chunkId = parseInt(process.env.CHUNK_ID, 10);
+  }
+  if (!parsed.totalChunks && process.env.TOTAL_CHUNKS) {
+    parsed.totalChunks = parseInt(process.env.TOTAL_CHUNKS, 10);
+  }
 
   return {
     urls: parsed.urls,
@@ -108,6 +116,8 @@ function parseArgs(): CliArgs {
     timeout: parsed.timeout || 60000, // Default 60 seconds
     callbackUrl: parsed.callbackUrl,
     callbackSecret: parsed.callbackSecret,
+    chunkId: parsed.chunkId,
+    totalChunks: parsed.totalChunks,
   };
 }
 
@@ -182,6 +192,9 @@ async function main() {
   console.log(`   Concurrency: ${args.concurrency}`);
   console.log(`   Timeout: ${args.timeout}ms`);
   if (args.jobId) console.log(`   Job ID: ${args.jobId}`);
+  if (args.chunkId && args.totalChunks) {
+    console.log(`   Chunk: ${args.chunkId}/${args.totalChunks}`);
+  }
   if (args.callbackUrl) console.log(`   Callback: ${args.callbackUrl}`);
 
   // Validate Upstash credentials before starting
@@ -199,8 +212,8 @@ async function main() {
   console.log("  📥 Starting Scrape");
   console.log("───────────────────────────────────────────────────────────────\n");
 
-  // Mark job as started
-  if (args.jobId) {
+  // Mark job as started (only for first chunk or non-chunked jobs)
+  if (args.jobId && (!args.chunkId || args.chunkId === 1)) {
     await markJobStarted(args.jobId, urls.length);
   }
 
@@ -311,18 +324,35 @@ async function main() {
 
   // Mark job as completed
   if (args.jobId) {
-    await markJobCompleted(args.jobId, indexed, failed);
+    if (args.chunkId && args.totalChunks && args.totalChunks > 1) {
+      // Chunked processing - mark chunk as completed
+      const isJobComplete = await markChunkCompleted(args.jobId, args.chunkId, indexed, failed);
+      if (isJobComplete) {
+        console.log(`\n🎉 All chunks completed! Job ${args.jobId} finalized.`);
+      }
+    } else {
+      // Single job processing
+      await markJobCompleted(args.jobId, indexed, failed);
+    }
   }
 
-  // Send callback
+  // Send callback (only for single jobs or when all chunks are complete)
   if (args.callbackUrl) {
-    await sendCallback(args.callbackUrl, args.callbackSecret, {
-      jobId: args.jobId || "unknown",
-      status: failed > indexed ? "failed" : "completed",
-      indexed,
-      failed,
-      total: urls.length,
-    });
+    const isChunkedJob = args.chunkId && args.totalChunks && args.totalChunks > 1;
+
+    if (!isChunkedJob) {
+      // Single job - send callback immediately
+      await sendCallback(args.callbackUrl, args.callbackSecret, {
+        jobId: args.jobId || "unknown",
+        status: failed > indexed ? "failed" : "completed",
+        indexed,
+        failed,
+        total: urls.length,
+      });
+    } else {
+      // Chunked job - callback is sent by the chunk completion function when all chunks are done
+      console.log(`📞 Callback will be sent when all ${args.totalChunks} chunks complete`);
+    }
   }
 
   console.log("\n═══════════════════════════════════════════════════════════════");

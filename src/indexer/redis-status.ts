@@ -144,3 +144,66 @@ export async function incrementIndexed(jobId: string): Promise<void> {
 export async function incrementFailed(jobId: string): Promise<void> {
   await redisCommand(["INCR", `scrape-job:${jobId}:failed`]);
 }
+
+/**
+ * Mark chunk as completed and check if job is fully done
+ */
+export async function markChunkCompleted(
+  jobId: string,
+  chunkId: number,
+  indexed: number,
+  failed: number
+): Promise<boolean> {
+  const creds = getCredentials();
+  if (!creds) return false;
+
+  // Mark this chunk as completed
+  await setWithTTL(`scrape-job:${jobId}:chunk_${chunkId}:completed`, "true");
+  await setWithTTL(`scrape-job:${jobId}:chunk_${chunkId}:indexed`, indexed);
+  await setWithTTL(`scrape-job:${jobId}:chunk_${chunkId}:failed`, failed);
+
+  // Increment completed chunks counter
+  const completedChunks = await redisCommand(["INCR", `scrape-job:${jobId}:chunks_completed`]);
+  const totalChunks = await get(`scrape-job:${jobId}:chunks_total`);
+
+  if (!totalChunks || !completedChunks) return false;
+
+  const totalChunksNum = parseInt(totalChunks, 10);
+  const completedChunksNum = completedChunks as number;
+
+  console.log(`🧩 Chunk ${chunkId} completed. Progress: ${completedChunksNum}/${totalChunksNum} chunks`);
+
+  // Check if all chunks are completed
+  if (completedChunksNum >= totalChunksNum) {
+    // All chunks done - finalize the job
+    await finalizeJobAfterChunks(jobId);
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Finalize job after all chunks are completed
+ */
+async function finalizeJobAfterChunks(jobId: string): Promise<void> {
+  console.log(`🎉 All chunks completed for job ${jobId}. Finalizing...`);
+
+  // Sum up all chunk results
+  const totalChunks = await get(`scrape-job:${jobId}:chunks_total`);
+  if (!totalChunks) return;
+
+  let totalIndexed = 0;
+  let totalFailed = 0;
+
+  for (let i = 1; i <= parseInt(totalChunks, 10); i++) {
+    const chunkIndexed = await get(`scrape-job:${jobId}:chunk_${i}:indexed`);
+    const chunkFailed = await get(`scrape-job:${jobId}:chunk_${i}:failed`);
+
+    totalIndexed += parseInt(chunkIndexed || "0", 10);
+    totalFailed += parseInt(chunkFailed || "0", 10);
+  }
+
+  // Mark overall job as completed
+  await markJobCompleted(jobId, totalIndexed, totalFailed);
+}

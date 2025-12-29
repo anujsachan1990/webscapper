@@ -44,11 +44,24 @@ on:
           - cheerio
           - puppeteer
           - firecrawl
+      total_chunks:
+        description: "Total number of chunks for parallel processing"
+        required: false
+        default: "1"
+      chunk_id:
+        description: "Current chunk ID (1-based) for this job"
+        required: false
+        default: "1"
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    strategy:
+      matrix:
+        # Create matrix for parallel chunks
+        chunk: ${{ fromJSON(github.event.client_payload.total_chunks || github.event.inputs.total_chunks || '[1]') }}
+    name: scrape-chunk-${{ matrix.chunk }}
 
     steps:
       - name: Checkout code
@@ -94,13 +107,28 @@ jobs:
           FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
 
           # Job parameters (from dispatch or manual input)
-          URLS_JSON: ${{ github.event.client_payload.urls_json || github.event.inputs.urls_json }}
+          URLS_JSON: >
+            ${{ matrix.chunk == 1 && (github.event.client_payload.chunk_1 || github.event.inputs.urls_json) ||
+            matrix.chunk == 2 && (github.event.client_payload.chunk_2 || github.event.inputs.urls_json) ||
+            matrix.chunk == 3 && (github.event.client_payload.chunk_3 || github.event.inputs.urls_json) ||
+            matrix.chunk == 4 && (github.event.client_payload.chunk_4 || github.event.inputs.urls_json) ||
+            matrix.chunk == 5 && (github.event.client_payload.chunk_5 || github.event.inputs.urls_json) ||
+            matrix.chunk == 6 && (github.event.client_payload.chunk_6 || github.event.inputs.urls_json) ||
+            matrix.chunk == 7 && (github.event.client_payload.chunk_7 || github.event.inputs.urls_json) ||
+            matrix.chunk == 8 && (github.event.client_payload.chunk_8 || github.event.inputs.urls_json) ||
+            matrix.chunk == 9 && (github.event.client_payload.chunk_9 || github.event.inputs.urls_json) ||
+            matrix.chunk == 10 && (github.event.client_payload.chunk_10 || github.event.inputs.urls_json) ||
+            github.event.inputs.urls_json }}
           BRAND_SLUG: ${{ github.event.client_payload.brand_slug || github.event.inputs.brand_slug }}
           JOB_ID: ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
           CALLBACK_URL: ${{ github.event.client_payload.callback_url || '' }}
           SCRAPER_ENGINE: ${{ github.event.client_payload.engine || github.event.inputs.engine || 'cheerio' }}
+
+          # Chunk processing metadata
+          CHUNK_ID: ${{ matrix.chunk }}
+          TOTAL_CHUNKS: ${{ github.event.client_payload.total_chunks || github.event.inputs.total_chunks || 1 }}
         run: |
-          echo "🚀 Starting scrape job"
+          echo "🚀 Starting scrape job (Chunk $CHUNK_ID/$TOTAL_CHUNKS)"
           echo "   Brand: $BRAND_SLUG"
           echo "   Job ID: $JOB_ID"
           echo "   Engine: $SCRAPER_ENGINE"
@@ -111,8 +139,9 @@ jobs:
       - name: Job Summary
         if: always()
         run: |
-          echo "## Scrape Job Complete" >> $GITHUB_STEP_SUMMARY
+          echo "## Scrape Job Complete (Chunk ${{ env.CHUNK_ID }}/${{ env.TOTAL_CHUNKS }})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Brand:** ${{ github.event.client_payload.brand_slug || github.event.inputs.brand_slug }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Job ID:** ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Chunk:** ${{ env.CHUNK_ID }}/${{ env.TOTAL_CHUNKS }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
