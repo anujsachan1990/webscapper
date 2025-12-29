@@ -126,7 +126,7 @@ jobs:
 
           # Chunk processing metadata
           CHUNK_ID: ${{ matrix.chunk }}
-          TOTAL_CHUNKS: ${{ github.event.client_payload.total_chunks || github.event.inputs.total_chunks || 1 }}
+          TOTAL_CHUNKS: ${{ github.event.client_payload.total_chunks_count || github.event.inputs.total_chunks || 1 }}
         run: |
           echo "🚀 Starting scrape job (Chunk $CHUNK_ID/$TOTAL_CHUNKS)"
           echo "   Brand: $BRAND_SLUG"
