@@ -124,19 +124,19 @@ jobs:
             10) URLS="$CHUNK_10" ;;
             *) URLS="" ;;
           esac
-          
+
           # Fallback to legacy urls_json format from payload
           if [ -z "$URLS" ] && [ -n "$LEGACY_URLS" ]; then
             echo "📋 Using legacy urls_json format from payload"
             URLS="$LEGACY_URLS"
           fi
-          
+
           # Fallback to manual input (for workflow_dispatch)
           if [ -z "$URLS" ] && [ -n "$MANUAL_URLS" ]; then
             echo "📋 Using manual urls_json input"
             URLS="$MANUAL_URLS"
           fi
-          
+
           echo "📋 Chunk $CHUNK_ID URLs: ${URLS:0:100}..." 
           echo "urls_json=$URLS" >> $GITHUB_OUTPUT
 
