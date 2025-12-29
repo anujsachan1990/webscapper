@@ -54,13 +54,36 @@ on:
         default: "1"
 
 jobs:
+  # Prepare the chunk matrix before running scrape jobs
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Determine chunk matrix
+        id: set-matrix
+        run: |
+          # Get total chunks from payload or input (default to 1)
+          TOTAL_CHUNKS="${{ github.event.client_payload.total_chunks_count || github.event.inputs.total_chunks || '1' }}"
+
+          # Build JSON array [1] or [1,2,3,...] based on total chunks
+          if [ "$TOTAL_CHUNKS" == "1" ]; then
+            MATRIX='[1]'
+          else
+            MATRIX=$(seq 1 $TOTAL_CHUNKS | jq -cs '.')
+          fi
+
+          echo "Matrix: $MATRIX"
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+
   scrape:
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:
+      fail-fast: false
       matrix:
-        # Create matrix for parallel chunks
-        chunk: ${{ fromJSON(github.event.client_payload.total_chunks || github.event.inputs.total_chunks || '[1]') }}
+        chunk: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     name: scrape-chunk-${{ matrix.chunk }}
 
     steps:
