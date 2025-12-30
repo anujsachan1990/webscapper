@@ -52,6 +52,37 @@ on:
         description: "Current chunk ID (1-based) for this job"
         required: false
         default: "1"
+      # Chunk inputs for parallel processing via workflow_dispatch
+      chunk_1:
+        description: "URLs for chunk 1"
+        required: false
+      chunk_2:
+        description: "URLs for chunk 2"
+        required: false
+      chunk_3:
+        description: "URLs for chunk 3"
+        required: false
+      chunk_4:
+        description: "URLs for chunk 4"
+        required: false
+      chunk_5:
+        description: "URLs for chunk 5"
+        required: false
+      chunk_6:
+        description: "URLs for chunk 6"
+        required: false
+      chunk_7:
+        description: "URLs for chunk 7"
+        required: false
+      chunk_8:
+        description: "URLs for chunk 8"
+        required: false
+      chunk_9:
+        description: "URLs for chunk 9"
+        required: false
+      chunk_10:
+        description: "URLs for chunk 10"
+        required: false
 
 jobs:
   # Prepare the chunk matrix before running scrape jobs
@@ -117,17 +148,17 @@ jobs:
         id: get-urls
         env:
           CHUNK_ID: ${{ matrix.chunk }}
-          # All chunk data from payload (chunked format)
-          CHUNK_1: ${{ github.event.client_payload.chunk_1 || '' }}
-          CHUNK_2: ${{ github.event.client_payload.chunk_2 || '' }}
-          CHUNK_3: ${{ github.event.client_payload.chunk_3 || '' }}
-          CHUNK_4: ${{ github.event.client_payload.chunk_4 || '' }}
-          CHUNK_5: ${{ github.event.client_payload.chunk_5 || '' }}
-          CHUNK_6: ${{ github.event.client_payload.chunk_6 || '' }}
-          CHUNK_7: ${{ github.event.client_payload.chunk_7 || '' }}
-          CHUNK_8: ${{ github.event.client_payload.chunk_8 || '' }}
-          CHUNK_9: ${{ github.event.client_payload.chunk_9 || '' }}
-          CHUNK_10: ${{ github.event.client_payload.chunk_10 || '' }}
+          # All chunk data from payload (chunked format) - checking both client_payload and inputs
+          CHUNK_1: ${{ github.event.client_payload.chunk_1 || github.event.inputs.chunk_1 || '' }}
+          CHUNK_2: ${{ github.event.client_payload.chunk_2 || github.event.inputs.chunk_2 || '' }}
+          CHUNK_3: ${{ github.event.client_payload.chunk_3 || github.event.inputs.chunk_3 || '' }}
+          CHUNK_4: ${{ github.event.client_payload.chunk_4 || github.event.inputs.chunk_4 || '' }}
+          CHUNK_5: ${{ github.event.client_payload.chunk_5 || github.event.inputs.chunk_5 || '' }}
+          CHUNK_6: ${{ github.event.client_payload.chunk_6 || github.event.inputs.chunk_6 || '' }}
+          CHUNK_7: ${{ github.event.client_payload.chunk_7 || github.event.inputs.chunk_7 || '' }}
+          CHUNK_8: ${{ github.event.client_payload.chunk_8 || github.event.inputs.chunk_8 || '' }}
+          CHUNK_9: ${{ github.event.client_payload.chunk_9 || github.event.inputs.chunk_9 || '' }}
+          CHUNK_10: ${{ github.event.client_payload.chunk_10 || github.event.inputs.chunk_10 || '' }}
           # Legacy format fallback (urls_json in payload)
           LEGACY_URLS: ${{ github.event.client_payload.urls_json || '' }}
           # Fallback for manual triggers
