@@ -256,15 +256,31 @@ async function main() {
   if (args.callbackUrl) console.log(`   Callback: ${args.callbackUrl}`);
 
   // Set up BYOK dynamic credentials if provided
-  if (args.vectorDbUrl && args.vectorDbToken) {
+  // Check if BYOK credentials are provided and valid (not empty strings)
+  const byokUrl = args.vectorDbUrl?.trim() || "";
+  const byokToken = args.vectorDbToken?.trim() || "";
+  const hasByokUrl = byokUrl.length > 0;
+  const hasByokToken = byokToken.length > 0;
+
+  if (hasByokUrl && hasByokToken) {
+    console.log(`   🔐 BYOK Mode detected:`);
+    console.log(`      Provider: ${args.vectorDbProvider || "upstash"}`);
+    console.log(`      URL: ${byokUrl.substring(0, 50)}...`);
+    console.log(`      Token: ${byokToken.substring(0, 10)}...`);
+    if (args.vectorDbIndexName) console.log(`      Index: ${args.vectorDbIndexName}`);
+    if (args.vectorDbNamespace) console.log(`      Namespace: ${args.vectorDbNamespace}`);
+
     setDynamicCredentials({
       provider: args.vectorDbProvider || "upstash",
-      url: args.vectorDbUrl,
-      token: args.vectorDbToken,
+      url: byokUrl,
+      token: byokToken,
       indexName: args.vectorDbIndexName,
       namespace: args.vectorDbNamespace,
     });
-    console.log(`   🔐 BYOK Mode: ${args.vectorDbProvider || "upstash"}`);
+  } else if (hasByokUrl || hasByokToken) {
+    // Partial BYOK config - warn but continue with defaults
+    console.log(`   ⚠️  Partial BYOK config detected (missing ${!hasByokUrl ? "URL" : "token"})`);
+    console.log(`   ⚠️  Falling back to default Upstash credentials`);
   }
 
   // Validate Vector DB credentials before starting

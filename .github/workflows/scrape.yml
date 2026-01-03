@@ -185,11 +185,12 @@ jobs:
 
           # BYOK Vector DB credentials (from dispatch payload - overrides defaults)
           # When these are set, the scraper will use customer's vector DB instead of platform default
-          BYOK_VECTOR_DB_PROVIDER: ${{ github.event.client_payload.vector_db_provider || '' }}
-          BYOK_VECTOR_DB_URL: ${{ github.event.client_payload.vector_db_url || '' }}
-          BYOK_VECTOR_DB_TOKEN: ${{ github.event.client_payload.vector_db_token || '' }}
-          BYOK_VECTOR_DB_INDEX: ${{ github.event.client_payload.vector_db_index || '' }}
-          BYOK_VECTOR_DB_NAMESPACE: ${{ github.event.client_payload.vector_db_namespace || '' }}
+          # Note: We use empty string fallback to avoid undefined values
+          BYOK_VECTOR_DB_PROVIDER: ${{ github.event.client_payload.vector_db_provider }}
+          BYOK_VECTOR_DB_URL: ${{ github.event.client_payload.vector_db_url }}
+          BYOK_VECTOR_DB_TOKEN: ${{ github.event.client_payload.vector_db_token }}
+          BYOK_VECTOR_DB_INDEX: ${{ github.event.client_payload.vector_db_index }}
+          BYOK_VECTOR_DB_NAMESPACE: ${{ github.event.client_payload.vector_db_namespace }}
 
           # Callback configuration
           CALLBACK_SECRET: ${{ secrets.SCRAPER_CALLBACK_SECRET }}

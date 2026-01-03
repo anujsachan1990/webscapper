@@ -37,6 +37,29 @@ export function getDynamicCredentials(): VectorDBCredentials | null {
   return dynamicCredentials;
 }
 
+/**
+ * Sanitize a string to ensure it only contains ASCII characters
+ * This prevents "Cannot convert argument to a ByteString" errors in fetch headers
+ */
+function sanitizeForHeader(value: string | undefined): string {
+  if (!value) return "";
+  // Remove any non-ASCII characters (keep only characters 0-127)
+  return value.replace(/[^\x00-\x7F]/g, "").trim();
+}
+
+/**
+ * Validate that a URL is properly formatted
+ */
+function isValidUrl(url: string | undefined): boolean {
+  if (!url) return false;
+  try {
+    new URL(url);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Get Upstash credentials (supports both dynamic and env-based)
 function getCredentials() {
   if (cachedCredentials) {
@@ -44,22 +67,42 @@ function getCredentials() {
   }
 
   // Priority 1: Dynamic credentials (BYOK)
-  if (dynamicCredentials) {
+  if (dynamicCredentials && dynamicCredentials.url && dynamicCredentials.token) {
+    const sanitizedUrl = sanitizeForHeader(dynamicCredentials.url);
+    const sanitizedToken = sanitizeForHeader(dynamicCredentials.token);
+
+    // Validate the URL is properly formatted
+    if (!isValidUrl(sanitizedUrl)) {
+      console.error(`   ❌ Invalid BYOK URL: ${sanitizedUrl}`);
+      throw new Error(`Invalid BYOK vector DB URL: ${sanitizedUrl}`);
+    }
+
+    // Validate token is not empty after sanitization
+    if (!sanitizedToken) {
+      console.error(`   ❌ BYOK token is empty or contains only invalid characters`);
+      throw new Error("BYOK vector DB token is empty or invalid");
+    }
+
     cachedCredentials = {
-      url: dynamicCredentials.url,
-      token: dynamicCredentials.token,
+      url: sanitizedUrl,
+      token: sanitizedToken,
     };
+    console.log(`   ✅ Using BYOK credentials for: ${sanitizedUrl.substring(0, 50)}...`);
     return cachedCredentials;
   }
 
   // Priority 2: Environment variables
-  const url = process.env.UPSTASH_VECTOR_REST_URL;
-  const token = process.env.UPSTASH_VECTOR_REST_TOKEN;
+  const url = sanitizeForHeader(process.env.UPSTASH_VECTOR_REST_URL);
+  const token = sanitizeForHeader(process.env.UPSTASH_VECTOR_REST_TOKEN);
 
   if (!url || !token) {
     throw new Error(
       "Upstash Vector credentials not found. Set UPSTASH_VECTOR_REST_URL and UPSTASH_VECTOR_REST_TOKEN or provide dynamic credentials."
     );
+  }
+
+  if (!isValidUrl(url)) {
+    throw new Error(`Invalid Upstash Vector URL: ${url}`);
   }
 
   cachedCredentials = { url, token };
