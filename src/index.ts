@@ -13,9 +13,14 @@
 
 import "dotenv/config";
 import { scrapeMultipleUrls } from "./scrapers/cheerio-scraper.js";
-import { indexMultipleContents, validateCredentials } from "./indexer/upstash-indexer.js";
+import {
+  indexMultipleContents,
+  validateCredentials,
+  setDynamicCredentials,
+  isUsingBYOK,
+} from "./indexer/upstash-indexer.js";
 import { markJobStarted, markJobCompleted, markChunkCompleted } from "./indexer/redis-status.js";
-import type { CallbackPayload, ScrapedContent, ScraperEngine } from "./types.js";
+import type { CallbackPayload, ScrapedContent, ScraperEngine, VectorDBCredentials } from "./types.js";
 
 // Dynamic imports to avoid loading unused scrapers
 async function loadPuppeteerScraper() {
@@ -49,6 +54,12 @@ interface CliArgs {
   // Chunking options (for RAG quality tuning)
   chunkSize?: number;
   chunkOverlap?: number;
+  // BYOK Vector DB credentials (optional - overrides env vars)
+  vectorDbProvider?: VectorDBCredentials["provider"];
+  vectorDbUrl?: string;
+  vectorDbToken?: string;
+  vectorDbIndexName?: string;
+  vectorDbNamespace?: string;
 }
 
 /**
@@ -77,6 +88,16 @@ function parseArgs(): CliArgs {
       parsed.callbackSecret = arg.slice(18);
     } else if (arg.startsWith("--timeout=")) {
       parsed.timeout = parseInt(arg.slice(10), 10);
+    } else if (arg.startsWith("--vector-db-provider=")) {
+      parsed.vectorDbProvider = arg.slice(21) as VectorDBCredentials["provider"];
+    } else if (arg.startsWith("--vector-db-url=")) {
+      parsed.vectorDbUrl = arg.slice(16);
+    } else if (arg.startsWith("--vector-db-token=")) {
+      parsed.vectorDbToken = arg.slice(18);
+    } else if (arg.startsWith("--vector-db-index=")) {
+      parsed.vectorDbIndexName = arg.slice(18);
+    } else if (arg.startsWith("--vector-db-namespace=")) {
+      parsed.vectorDbNamespace = arg.slice(22);
     }
   }
 
@@ -116,6 +137,23 @@ function parseArgs(): CliArgs {
     parsed.chunkOverlap = parseInt(process.env.CHUNK_OVERLAP, 10);
   }
 
+  // BYOK Vector DB credentials from environment
+  if (!parsed.vectorDbProvider && process.env.BYOK_VECTOR_DB_PROVIDER) {
+    parsed.vectorDbProvider = process.env.BYOK_VECTOR_DB_PROVIDER as VectorDBCredentials["provider"];
+  }
+  if (!parsed.vectorDbUrl && process.env.BYOK_VECTOR_DB_URL) {
+    parsed.vectorDbUrl = process.env.BYOK_VECTOR_DB_URL;
+  }
+  if (!parsed.vectorDbToken && process.env.BYOK_VECTOR_DB_TOKEN) {
+    parsed.vectorDbToken = process.env.BYOK_VECTOR_DB_TOKEN;
+  }
+  if (!parsed.vectorDbIndexName && process.env.BYOK_VECTOR_DB_INDEX) {
+    parsed.vectorDbIndexName = process.env.BYOK_VECTOR_DB_INDEX;
+  }
+  if (!parsed.vectorDbNamespace && process.env.BYOK_VECTOR_DB_NAMESPACE) {
+    parsed.vectorDbNamespace = process.env.BYOK_VECTOR_DB_NAMESPACE;
+  }
+
   return {
     urls: parsed.urls,
     urlsJson: parsed.urlsJson,
@@ -130,6 +168,12 @@ function parseArgs(): CliArgs {
     totalChunks: parsed.totalChunks,
     chunkSize: parsed.chunkSize || 1000, // Default 1000 chars (improved from 800)
     chunkOverlap: parsed.chunkOverlap || 200, // Default 200 chars overlap (20%)
+    // BYOK credentials
+    vectorDbProvider: parsed.vectorDbProvider,
+    vectorDbUrl: parsed.vectorDbUrl,
+    vectorDbToken: parsed.vectorDbToken,
+    vectorDbIndexName: parsed.vectorDbIndexName,
+    vectorDbNamespace: parsed.vectorDbNamespace,
   };
 }
 
@@ -211,16 +255,33 @@ async function main() {
   }
   if (args.callbackUrl) console.log(`   Callback: ${args.callbackUrl}`);
 
-  // Validate Upstash credentials before starting
+  // Set up BYOK dynamic credentials if provided
+  if (args.vectorDbUrl && args.vectorDbToken) {
+    setDynamicCredentials({
+      provider: args.vectorDbProvider || "upstash",
+      url: args.vectorDbUrl,
+      token: args.vectorDbToken,
+      indexName: args.vectorDbIndexName,
+      namespace: args.vectorDbNamespace,
+    });
+    console.log(`   🔐 BYOK Mode: ${args.vectorDbProvider || "upstash"}`);
+  }
+
+  // Validate Vector DB credentials before starting
   if (!validateCredentials()) {
-    console.error("\n❌ Upstash Vector credentials not found!");
-    console.error(
-      "   Set UPSTASH_VECTOR_REST_URL and UPSTASH_VECTOR_REST_TOKEN environment variables."
-    );
+    console.error("\n❌ Vector DB credentials not found!");
+    if (isUsingBYOK()) {
+      console.error("   BYOK credentials were provided but appear to be invalid.");
+    } else {
+      console.error(
+        "   Set UPSTASH_VECTOR_REST_URL and UPSTASH_VECTOR_REST_TOKEN environment variables."
+      );
+      console.error("   Or provide BYOK credentials via --vector-db-url and --vector-db-token.");
+    }
     console.error("   Create a .env file from env.example.txt or set them in your environment.");
     process.exit(1);
   }
-  console.log(`   ✅ Upstash credentials: configured`);
+  console.log(`   ✅ Vector DB credentials: configured ${isUsingBYOK() ? "(BYOK)" : "(env)"}`);
 
   console.log("\n───────────────────────────────────────────────────────────────");
   console.log("  📥 Starting Scrape");

@@ -3,25 +3,62 @@
  *
  * Uses direct REST API calls instead of SDK to minimize memory usage.
  * Indexes scraped content into Upstash Vector database.
+ *
+ * Supports BYOK (Bring Your Own Keys):
+ * - Dynamic credentials can be passed at runtime
+ * - Falls back to environment variables if not provided
  */
 
-import type { ScrapedContent, IndexOptions } from "../types.js";
+import type { ScrapedContent, IndexOptions, VectorDBCredentials } from "../types.js";
 
 // Cached credentials to avoid repeated env lookups
 let cachedCredentials: { url: string; token: string } | null = null;
 
-// Get Upstash credentials
+// Dynamic credentials set at runtime (for BYOK)
+let dynamicCredentials: VectorDBCredentials | null = null;
+
+/**
+ * Set dynamic vector DB credentials for BYOK
+ * Call this before indexing to override environment variables
+ */
+export function setDynamicCredentials(credentials: VectorDBCredentials | null): void {
+  dynamicCredentials = credentials;
+  // Clear cached credentials so new ones are used
+  cachedCredentials = null;
+  if (credentials) {
+    console.log(`   🔑 Using dynamic ${credentials.provider} credentials (BYOK mode)`);
+  }
+}
+
+/**
+ * Get current dynamic credentials
+ */
+export function getDynamicCredentials(): VectorDBCredentials | null {
+  return dynamicCredentials;
+}
+
+// Get Upstash credentials (supports both dynamic and env-based)
 function getCredentials() {
   if (cachedCredentials) {
     return cachedCredentials;
   }
 
+  // Priority 1: Dynamic credentials (BYOK)
+  if (dynamicCredentials) {
+    cachedCredentials = {
+      url: dynamicCredentials.url,
+      token: dynamicCredentials.token,
+    };
+    return cachedCredentials;
+  }
+
+  // Priority 2: Environment variables
   const url = process.env.UPSTASH_VECTOR_REST_URL;
   const token = process.env.UPSTASH_VECTOR_REST_TOKEN;
 
   if (!url || !token) {
     throw new Error(
-      "Upstash Vector credentials not found. Set UPSTASH_VECTOR_REST_URL and UPSTASH_VECTOR_REST_TOKEN."
+      "Upstash Vector credentials not found. Set UPSTASH_VECTOR_REST_URL and UPSTASH_VECTOR_REST_TOKEN or provide dynamic credentials."
     );
   }
 
@@ -31,6 +68,7 @@ function getCredentials() {
 
 /**
  * Validate credentials before starting indexing
+ * Checks both dynamic and environment-based credentials
  */
 export function validateCredentials(): boolean {
   try {
@@ -39,6 +77,13 @@ export function validateCredentials(): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Check if using BYOK mode
+ */
+export function isUsingBYOK(): boolean {
+  return dynamicCredentials !== null;
 }
 
 /**

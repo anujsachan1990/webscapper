@@ -30,6 +30,18 @@ export interface IndexOptions {
 }
 
 /**
+ * Dynamic vector DB credentials for BYOK (Bring Your Own Keys)
+ * When provided, these override the environment variables
+ */
+export interface VectorDBCredentials {
+  provider: "upstash" | "pinecone" | "weaviate";
+  url: string;
+  token: string;
+  indexName?: string;
+  namespace?: string;
+}
+
+/**
  * Default chunking configuration (matches main app settings)
  */
 export const DEFAULT_CHUNK_OPTIONS = {
