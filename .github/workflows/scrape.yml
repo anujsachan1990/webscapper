@@ -10,7 +10,13 @@
 #     "urls_json": "[\"https://example.com\"]",
 #     "job_id": "abc123",
 #     "brand_slug": "mysite",
-#     "callback_url": "https://app.com/api/setup/scraper-callback"
+#     "callback_url": "https://app.com/api/setup/scraper-callback",
+#     // BYOK Vector DB credentials (optional - overrides default Upstash)
+#     "vector_db_provider": "upstash",
+#     "vector_db_url": "https://custom-index.upstash.io",
+#     "vector_db_token": "customer-token",
+#     "vector_db_index": "my-index",
+#     "vector_db_namespace": "my-namespace"
 #   }
 # }
 
@@ -167,11 +173,23 @@ jobs:
         env:
           # Set memory limit and enable garbage collection (2GB for Cheerio, 4GB for Puppeteer)
           NODE_OPTIONS: ${{ (github.event.client_payload.engine == 'puppeteer' || github.event.inputs.engine == 'puppeteer') && '--max-old-space-size=4096 --expose-gc' || '--max-old-space-size=2048 --expose-gc' }}
-          # Upstash credentials (from repository secrets)
+          
+          # Default Upstash credentials (from repository secrets)
+          # These are used when BYOK is not enabled
           UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
           UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}
+          
+          # Redis credentials for job status tracking (always from secrets)
           UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
           UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+
+          # BYOK Vector DB credentials (from dispatch payload - overrides defaults)
+          # When these are set, the scraper will use customer's vector DB instead of platform default
+          BYOK_VECTOR_DB_PROVIDER: ${{ github.event.client_payload.vector_db_provider || '' }}
+          BYOK_VECTOR_DB_URL: ${{ github.event.client_payload.vector_db_url || '' }}
+          BYOK_VECTOR_DB_TOKEN: ${{ github.event.client_payload.vector_db_token || '' }}
+          BYOK_VECTOR_DB_INDEX: ${{ github.event.client_payload.vector_db_index || '' }}
+          BYOK_VECTOR_DB_NAMESPACE: ${{ github.event.client_payload.vector_db_namespace || '' }}
 
           # Callback configuration
           CALLBACK_SECRET: ${{ secrets.SCRAPER_CALLBACK_SECRET }}
@@ -196,6 +214,13 @@ jobs:
           echo "   Engine: $SCRAPER_ENGINE"
           echo "   Memory limit: $NODE_OPTIONS"
           echo "   URLs count: $(echo "$URLS_JSON" | jq -r 'length' 2>/dev/null || echo 'unknown')"
+          
+          # Log BYOK status
+          if [ -n "$BYOK_VECTOR_DB_URL" ]; then
+            echo "   🔐 BYOK Mode: Using custom $BYOK_VECTOR_DB_PROVIDER vector DB"
+          else
+            echo "   📦 Default Mode: Using platform Upstash Vector"
+          fi
 
           npm run scrape
 
