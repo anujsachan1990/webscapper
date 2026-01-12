@@ -1,7 +1,7 @@
 {
   "name": "web-scraper-service",
-  "version": "1.0.0",
-  "description": "Standalone web scraping service for RAG content indexing. Designed to run in GitHub Actions or as a standalone service.",
+  "version": "1.1.0",
+  "description": "Standalone web scraping service for RAG content indexing. Designed to run in GitHub Actions with parallel processing support.",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -10,6 +10,7 @@
     "scrape:dev": "node --max-old-space-size=2048 --expose-gc --loader tsx src/index.ts",
     "scrape:cheerio": "node --max-old-space-size=2048 --expose-gc dist/index.js --engine=cheerio",
     "scrape:puppeteer": "node --max-old-space-size=4096 --expose-gc dist/index.js --engine=puppeteer",
+    "scrape:firecrawl": "node --max-old-space-size=2048 --expose-gc dist/index.js --engine=firecrawl",
     "test": "tsx src/test.ts",
     "lint": "eslint src/",
     "type-check": "tsc --noEmit"
