@@ -92,12 +92,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "npm"
+          cache: "yarn"
 
       - name: Generate deps cache key
         id: deps-cache-key
         run: |
-          KEY="deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'package.json') }}"
+          KEY="deps-${{ runner.os }}-${{ hashFiles('yarn.lock', 'package.json') }}"
           echo "key=$KEY" >> $GITHUB_OUTPUT
 
       - name: Cache node_modules
@@ -113,11 +113,11 @@ jobs:
 
       - name: Install dependencies (if cache miss)
         if: steps.cache-deps.outputs.cache-hit != 'true'
-        run: npm ci --ignore-optional
+        run: yarn install --frozen-lockfile
 
       - name: Build TypeScript (if cache miss)
         if: steps.cache-deps.outputs.cache-hit != 'true'
-        run: npm run build
+        run: yarn build
 
       - name: Determine chunk matrix
         id: set-matrix
@@ -167,7 +167,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "npm"
+          cache: "yarn"
 
       - name: Restore cached dependencies
         uses: actions/cache@v4
@@ -175,7 +175,7 @@ jobs:
           path: |
             node_modules
             dist
-          key: deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'package.json') }}
+          key: deps-${{ runner.os }}-${{ hashFiles('yarn.lock', 'package.json') }}
           restore-keys: |
             deps-${{ runner.os }}-
 
@@ -183,8 +183,8 @@ jobs:
         run: |
           if [ ! -d "node_modules" ]; then
             echo "📦 Cache miss - installing dependencies..."
-            npm ci --ignore-optional
-            npm run build
+            yarn install --frozen-lockfile
+            yarn build
           else
             echo "✅ Using cached node_modules"
           fi
@@ -195,7 +195,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/puppeteer
-          key: puppeteer-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          key: puppeteer-${{ runner.os }}-${{ hashFiles('yarn.lock') }}
           restore-keys: |
             puppeteer-${{ runner.os }}-
 
