@@ -146,6 +146,78 @@ export async function incrementFailed(jobId: string): Promise<void> {
 }
 
 /**
+ * Update job progress (for incremental batch indexing)
+ * Called after each batch is indexed to update cumulative stats
+ */
+export async function updateJobProgress(
+  jobId: string,
+  indexed: number,
+  failed: number,
+  chunks?: number
+): Promise<void> {
+  const creds = getCredentials();
+  if (!creds) return;
+
+  const updates: Promise<void>[] = [
+    setWithTTL(`scrape-job:${jobId}:indexed`, indexed),
+    setWithTTL(`scrape-job:${jobId}:failed`, failed),
+    setWithTTL(`scrape-job:${jobId}:last_update`, new Date().toISOString()),
+  ];
+
+  if (chunks !== undefined) {
+    updates.push(setWithTTL(`scrape-job:${jobId}:chunks_indexed`, chunks));
+  }
+
+  await Promise.all(updates);
+}
+
+/**
+ * Mark last successful batch for resume capability
+ */
+export async function markBatchCompleted(
+  jobId: string,
+  batchNumber: number,
+  urlsIndexed: string[]
+): Promise<void> {
+  const creds = getCredentials();
+  if (!creds) return;
+
+  await Promise.all([
+    setWithTTL(`scrape-job:${jobId}:last_batch`, batchNumber),
+    setWithTTL(`scrape-job:${jobId}:last_batch_urls`, JSON.stringify(urlsIndexed)),
+    setWithTTL(`scrape-job:${jobId}:last_batch_time`, new Date().toISOString()),
+  ]);
+}
+
+/**
+ * Get last successful batch info for resume capability
+ */
+export async function getLastBatchInfo(
+  jobId: string
+): Promise<{ batchNumber: number; urls: string[]; timestamp: string } | null> {
+  const creds = getCredentials();
+  if (!creds) return null;
+
+  const [batchNumber, urls, timestamp] = await Promise.all([
+    get(`scrape-job:${jobId}:last_batch`),
+    get(`scrape-job:${jobId}:last_batch_urls`),
+    get(`scrape-job:${jobId}:last_batch_time`),
+  ]);
+
+  if (!batchNumber) return null;
+
+  try {
+    return {
+      batchNumber: parseInt(batchNumber, 10),
+      urls: urls ? JSON.parse(urls) : [],
+      timestamp: timestamp || "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Mark chunk as completed and check if job is fully done
  */
 export async function markChunkCompleted(

@@ -62,8 +62,52 @@ export interface JobStatus {
 
 export interface CallbackPayload {
   jobId: string;
-  status: "completed" | "failed";
+  status: "completed" | "failed" | "progress";
   indexed: number;
   failed: number;
   total: number;
+  /** Current batch number (for progress updates) */
+  batchNumber?: number;
+  /** URLs indexed in this batch (for progress updates) */
+  batchUrls?: string[];
+}
+
+/**
+ * Progress callback for incremental batch indexing
+ * Called every N URLs with current progress
+ */
+export interface BatchProgressCallback {
+  (progress: BatchProgress): Promise<void> | void;
+}
+
+/**
+ * Progress information for a batch of indexed content
+ */
+export interface BatchProgress {
+  /** Total URLs indexed so far */
+  indexedCount: number;
+  /** Total URLs failed so far */
+  failedCount: number;
+  /** Total chunks indexed so far */
+  chunksIndexed: number;
+  /** Current batch number */
+  batchNumber: number;
+  /** URLs indexed in this batch */
+  batchUrls: string[];
+  /** Errors from this batch (if any) */
+  batchErrors: string[];
+}
+
+/**
+ * Options for IncrementalBatchIndexer
+ */
+export interface IncrementalIndexerOptions extends IndexOptions {
+  /** Number of URLs to buffer before indexing (default: 5) */
+  batchSize?: number;
+  /** Callback for progress updates */
+  onProgress?: BatchProgressCallback;
+  /** Callback URL for HTTP progress notifications */
+  callbackUrl?: string;
+  /** Secret for callback authentication */
+  callbackSecret?: string;
 }

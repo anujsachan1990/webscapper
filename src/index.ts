@@ -14,12 +14,17 @@
 import "dotenv/config";
 import { scrapeMultipleUrls } from "./scrapers/cheerio-scraper.js";
 import {
-  indexMultipleContents,
   validateCredentials,
   setDynamicCredentials,
   isUsingBYOK,
 } from "./indexer/upstash-indexer.js";
-import { markJobStarted, markJobCompleted, markChunkCompleted } from "./indexer/redis-status.js";
+import {
+  markJobStarted,
+  markJobCompleted,
+  markChunkCompleted,
+  markBatchCompleted,
+} from "./indexer/redis-status.js";
+import { IncrementalBatchIndexer } from "./indexer/incremental-batch-indexer.js";
 import type { CallbackPayload, ScrapedContent, ScraperEngine, VectorDBCredentials } from "./types.js";
 
 // Dynamic imports to avoid loading unused scrapers
@@ -54,6 +59,8 @@ interface CliArgs {
   // Chunking options (for RAG quality tuning)
   chunkSize?: number;
   chunkOverlap?: number;
+  // Incremental indexing options
+  indexBatchSize?: number;
   // BYOK Vector DB credentials (optional - overrides env vars)
   vectorDbProvider?: VectorDBCredentials["provider"];
   vectorDbUrl?: string;
@@ -136,6 +143,10 @@ function parseArgs(): CliArgs {
   if (!parsed.chunkOverlap && process.env.CHUNK_OVERLAP) {
     parsed.chunkOverlap = parseInt(process.env.CHUNK_OVERLAP, 10);
   }
+  // Incremental indexing batch size from environment
+  if (!parsed.indexBatchSize && process.env.INDEX_BATCH_SIZE) {
+    parsed.indexBatchSize = parseInt(process.env.INDEX_BATCH_SIZE, 10);
+  }
 
   // BYOK Vector DB credentials from environment
   if (!parsed.vectorDbProvider && process.env.BYOK_VECTOR_DB_PROVIDER) {
@@ -168,6 +179,7 @@ function parseArgs(): CliArgs {
     totalChunks: parsed.totalChunks,
     chunkSize: parsed.chunkSize || 1000, // Default 1000 chars (improved from 800)
     chunkOverlap: parsed.chunkOverlap || 200, // Default 200 chars overlap (20%)
+    indexBatchSize: parsed.indexBatchSize || 5, // Default 5 URLs per batch for incremental indexing
     // BYOK credentials
     vectorDbProvider: parsed.vectorDbProvider,
     vectorDbUrl: parsed.vectorDbUrl,
@@ -249,6 +261,7 @@ async function main() {
   console.log(`   Timeout: ${args.timeout}ms`);
   console.log(`   Chunk Size: ${args.chunkSize} chars`);
   console.log(`   Chunk Overlap: ${args.chunkOverlap} chars (${((args.chunkOverlap! / args.chunkSize!) * 100).toFixed(0)}%)`);
+  console.log(`   Index Batch Size: ${args.indexBatchSize} URLs (incremental indexing)`);
   if (args.jobId) console.log(`   Job ID: ${args.jobId}`);
   if (args.chunkId && args.totalChunks) {
     console.log(`   Chunk: ${args.chunkId}/${args.totalChunks}`);
@@ -300,7 +313,7 @@ async function main() {
   console.log(`   ✅ Vector DB credentials: configured ${isUsingBYOK() ? "(BYOK)" : "(env)"}`);
 
   console.log("\n───────────────────────────────────────────────────────────────");
-  console.log("  📥 Starting Scrape");
+  console.log("  📥 Starting Incremental Scrape & Index");
   console.log("───────────────────────────────────────────────────────────────\n");
 
   // Mark job as started (only for first chunk or non-chunked jobs)
@@ -308,12 +321,33 @@ async function main() {
     await markJobStarted(args.jobId, urls.length);
   }
 
-  let scrapedContents: ScrapedContent[] = [];
+  // Create incremental batch indexer
+  const indexer = new IncrementalBatchIndexer({
+    brandSlug: args.brandSlug,
+    jobId: args.jobId,
+    chunkSize: args.chunkSize,
+    chunkOverlap: args.chunkOverlap,
+    batchSize: args.indexBatchSize,
+    callbackUrl: args.callbackUrl,
+    callbackSecret: args.callbackSecret,
+    onProgress: async (progress) => {
+      // Log progress and optionally update Redis
+      console.log(
+        `📊 Progress: ${progress.indexedCount} indexed, ${progress.failedCount} failed (batch ${progress.batchNumber})`
+      );
+      // Mark batch as completed for resume capability
+      if (args.jobId) {
+        await markBatchCompleted(args.jobId, progress.batchNumber, progress.batchUrls);
+      }
+    },
+  });
+
   let indexed = 0;
   let failed = 0;
+  let totalChunks = 0;
 
   try {
-    // Scrape URLs
+    // Scrape URLs in batches and index incrementally
     const scrapeOptions = {
       concurrency: args.concurrency,
       timeout: args.timeout,
@@ -322,87 +356,110 @@ async function main() {
       },
     };
 
-    // Select scraper engine
-    switch (args.engine) {
-      case "puppeteer": {
-        const puppeteerScraper = await loadPuppeteerScraper();
-        scrapedContents = await puppeteerScraper.scrapeMultipleUrls(urls, scrapeOptions);
-        break;
-      }
-      case "firecrawl": {
-        const firecrawlScraper = await loadFirecrawlScraper();
-        if (!firecrawlScraper.isConfigured()) {
-          console.error("❌ FIRECRAWL_API_KEY not configured. Falling back to Cheerio.");
-          scrapedContents = await scrapeMultipleUrls(urls, scrapeOptions);
-        } else {
-          console.log("🔥 Using Firecrawl for LLM-optimized scraping");
-          scrapedContents = await firecrawlScraper.scrapeMultipleUrls(urls, scrapeOptions);
-        }
-        break;
-      }
-      case "cheerio":
-      default:
-        // Try Cheerio first (fast), then fallback to Puppeteer for failed URLs
-        console.log("📄 Trying Cheerio scraper first (fast)...");
-        let cheerioResults = await scrapeMultipleUrls(urls, scrapeOptions);
-        scrapedContents = cheerioResults;
+    // Process URLs in scrape batches (larger than index batches for efficiency)
+    const scrapeBatchSize = Math.max(args.indexBatchSize! * 2, 10); // Scrape 10+ at a time
+    let scrapedSoFar = 0;
 
-        // Check for 403 failures and retry with Puppeteer
-        const failedUrls = urls.filter(url => !cheerioResults.some(result => result.url === url));
-        if (failedUrls.length > 0) {
-          console.log(`\n🔄 ${failedUrls.length} URLs failed with Cheerio, retrying with Puppeteer...`);
-          try {
-            const puppeteerScraper = await loadPuppeteerScraper();
-            const puppeteerResults = await puppeteerScraper.scrapeMultipleUrls(failedUrls, {
-              ...scrapeOptions,
-              concurrency: 1, // Lower concurrency for Puppeteer to avoid overwhelming
-            });
-            scrapedContents = [...cheerioResults, ...puppeteerResults];
-            console.log(`✅ Puppeteer rescued ${puppeteerResults.length}/${failedUrls.length} URLs`);
-          } catch (error) {
-            console.log("⚠️  Puppeteer fallback failed:", error);
-          }
+    for (let i = 0; i < urls.length; i += scrapeBatchSize) {
+      const urlBatch = urls.slice(i, i + scrapeBatchSize);
+      console.log(
+        `\n📥 Scraping batch ${Math.floor(i / scrapeBatchSize) + 1}: ${urlBatch.length} URLs...`
+      );
+
+      let scrapedContents: ScrapedContent[] = [];
+
+      // Select scraper engine
+      switch (args.engine) {
+        case "puppeteer": {
+          const puppeteerScraper = await loadPuppeteerScraper();
+          scrapedContents = await puppeteerScraper.scrapeMultipleUrls(urlBatch, scrapeOptions);
+          break;
         }
-        break;
+        case "firecrawl": {
+          const firecrawlScraper = await loadFirecrawlScraper();
+          if (!firecrawlScraper.isConfigured()) {
+            console.error("❌ FIRECRAWL_API_KEY not configured. Falling back to Cheerio.");
+            scrapedContents = await scrapeMultipleUrls(urlBatch, scrapeOptions);
+          } else {
+            console.log("🔥 Using Firecrawl for LLM-optimized scraping");
+            scrapedContents = await firecrawlScraper.scrapeMultipleUrls(urlBatch, scrapeOptions);
+          }
+          break;
+        }
+        case "cheerio":
+        default:
+          // Try Cheerio first (fast), then fallback to Puppeteer for failed URLs
+          const cheerioResults = await scrapeMultipleUrls(urlBatch, scrapeOptions);
+          scrapedContents = cheerioResults;
+
+          // Check for 403 failures and retry with Puppeteer
+          const failedUrls = urlBatch.filter(
+            (url) => !cheerioResults.some((result) => result.url === url)
+          );
+          if (failedUrls.length > 0) {
+            console.log(
+              `\n🔄 ${failedUrls.length} URLs failed with Cheerio, retrying with Puppeteer...`
+            );
+            try {
+              const puppeteerScraper = await loadPuppeteerScraper();
+              const puppeteerResults = await puppeteerScraper.scrapeMultipleUrls(failedUrls, {
+                ...scrapeOptions,
+                concurrency: 1, // Lower concurrency for Puppeteer to avoid overwhelming
+              });
+              scrapedContents = [...cheerioResults, ...puppeteerResults];
+              console.log(`✅ Puppeteer rescued ${puppeteerResults.length}/${failedUrls.length} URLs`);
+            } catch (error) {
+              console.log("⚠️  Puppeteer fallback failed:", error);
+            }
+          }
+          break;
+      }
+
+      scrapedSoFar += scrapedContents.length;
+      console.log(`✅ Scraped ${scrapedContents.length} URLs (${scrapedSoFar}/${urls.length} total)`);
+
+      // Add scraped content to incremental indexer (auto-indexes every N URLs)
+      console.log("\n📤 Indexing scraped content incrementally...");
+      await indexer.addMultiple(scrapedContents);
+
+      // Clear scraped contents from memory immediately
+      scrapedContents.length = 0;
+      scrapedContents = [];
+
+      // Force garbage collection after each scrape batch
+      if (global.gc) {
+        global.gc();
+      }
     }
 
-    console.log(`\n✅ Scraped ${scrapedContents.length}/${urls.length} URLs`);
+    // Flush any remaining content in the indexer buffer
+    await indexer.flush();
+
+    // Get final stats
+    const stats = indexer.getStats();
+    indexed = stats.totalIndexed;
+    failed = stats.totalFailed;
+    totalChunks = stats.totalChunks;
 
     console.log("\n───────────────────────────────────────────────────────────────");
-    console.log("  📤 Indexing to Upstash Vector");
+    console.log("  📊 Final Results");
     console.log("───────────────────────────────────────────────────────────────\n");
+    console.log(`   ✅ Indexed: ${indexed} pages (${totalChunks} chunks)`);
+    console.log(`   ❌ Failed: ${failed} pages`);
+    console.log(`   📦 Batches processed: ${stats.batchCount}`);
 
-    // Index scraped content with improved chunking
-    const indexResult = await indexMultipleContents(scrapedContents, {
-      brandSlug: args.brandSlug,
-      jobId: args.jobId,
-      chunkSize: args.chunkSize,
-      chunkOverlap: args.chunkOverlap,
-    });
-
-    indexed = indexResult.totalIndexed;
-    failed = urls.length - indexed;
-
-    // Clear scraped contents from memory
-    scrapedContents.length = 0;
-    scrapedContents = [];
-
-    // Force garbage collection
-    if (global.gc) {
-      global.gc();
-    }
-
-    console.log(`\n📊 Indexing Results:`);
-    console.log(`   ✅ Indexed: ${indexed} pages (${indexResult.totalChunks} chunks)`);
-    console.log(`   ❌ Failed: ${indexResult.failed} pages`);
-
-    if (indexResult.errors.length > 0) {
+    if (stats.errors.length > 0) {
       console.log(`\n⚠️  Errors:`);
-      indexResult.errors.slice(0, 5).forEach((err) => console.log(`   - ${err}`));
+      stats.errors.slice(0, 5).forEach((err) => console.log(`   - ${err}`));
     }
   } catch (error) {
     console.error("\n❌ Scraping failed:", error);
-    failed = urls.length;
+    // Get partial stats from indexer
+    const stats = indexer.getStats();
+    indexed = stats.totalIndexed;
+    failed = urls.length - indexed;
+    totalChunks = stats.totalChunks;
+    console.log(`\n📊 Partial progress saved: ${indexed} pages indexed before failure`);
   } finally {
     // Cleanup Puppeteer if used
     if (args.engine === "puppeteer") {
