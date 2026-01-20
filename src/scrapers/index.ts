@@ -14,3 +14,12 @@ export {
   crawlWithFirecrawl,
   isFirecrawlConfigured,
 } from "./firecrawl-scraper.js";
+export {
+  scrapeWithFirecrawlDocker,
+  scrapeMultipleUrlsWithFirecrawlDocker,
+  crawlWithFirecrawlDocker,
+  isFirecrawlDockerConfigured,
+  setFirecrawlDockerConfig,
+  clearFirecrawlDockerConfig,
+  testFirecrawlDockerConnection,
+} from "./firecrawl-docker-scraper.js";

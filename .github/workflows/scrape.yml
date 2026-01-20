@@ -42,7 +42,7 @@ on:
         required: false
         default: ""
       engine:
-        description: "Scraper engine (cheerio, puppeteer, or firecrawl)"
+        description: "Scraper engine (cheerio, puppeteer, firecrawl, or firecrawl-docker)"
         required: false
         default: "cheerio"
         type: choice
@@ -50,6 +50,7 @@ on:
           - cheerio
           - puppeteer
           - firecrawl
+          - firecrawl-docker
       total_chunks:
         description: "Total number of chunks for parallel processing"
         required: false
@@ -92,6 +93,34 @@ jobs:
         chunk: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     name: scrape-chunk-${{ matrix.chunk }}
 
+    # Service containers for Firecrawl Docker (only used when engine is firecrawl-docker)
+    services:
+      # PostgreSQL for Firecrawl
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: firecrawl
+          POSTGRES_PASSWORD: firecrawl
+          POSTGRES_DB: firecrawl
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      # Redis for Firecrawl
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -118,6 +147,48 @@ jobs:
         uses: browser-actions/setup-chrome@latest
         with:
           chrome-version: stable
+
+      # Start Firecrawl Docker container (if using firecrawl-docker engine)
+      - name: Start Firecrawl Docker
+        if: github.event.client_payload.engine == 'firecrawl-docker' || github.event.inputs.engine == 'firecrawl-docker'
+        run: |
+          echo "🔥 Starting Firecrawl Docker container..."
+          
+          # Pull and start Firecrawl container
+          docker run -d \
+            --name firecrawl \
+            --network host \
+            -e REDIS_URL=redis://localhost:6379 \
+            -e POSTGRES_URL=postgres://firecrawl:firecrawl@localhost:5432/firecrawl \
+            -e USE_DB_AUTHENTICATION=false \
+            -e PORT=3002 \
+            -e HOST=0.0.0.0 \
+            -e SCRAPING_BEE_API_KEY="" \
+            -e OPENAI_API_KEY="" \
+            -e BULL_AUTH_KEY="" \
+            -e TEST_API_KEY="" \
+            -e NUM_WORKERS_PER_QUEUE=2 \
+            -e LOGGING_LEVEL=info \
+            -e PLAYWRIGHT_MICROSERVICE_URL="" \
+            mendableai/firecrawl:latest
+          
+          echo "⏳ Waiting for Firecrawl to be ready..."
+          
+          # Wait for Firecrawl to be healthy (up to 3 minutes)
+          for i in {1..36}; do
+            if curl -s http://localhost:3002/v1/scrape -X POST \
+               -H "Content-Type: application/json" \
+               -d '{"url":"https://example.com","formats":["markdown"]}' \
+               | grep -q "success"; then
+              echo "✅ Firecrawl Docker is ready!"
+              break
+            fi
+            echo "   Attempt $i/36 - Firecrawl not ready yet..."
+            sleep 5
+          done
+          
+          # Check if Firecrawl started successfully
+          docker logs firecrawl --tail 50
 
       - name: Determine URLs for this chunk
         id: get-urls
@@ -195,8 +266,13 @@ jobs:
           # Callback configuration
           CALLBACK_SECRET: ${{ secrets.SCRAPER_CALLBACK_SECRET }}
 
-          # Firecrawl API key (for firecrawl engine)
+          # Firecrawl API key (for firecrawl cloud engine)
           FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+
+          # Firecrawl Docker configuration (for firecrawl-docker engine)
+          # Uses local container by default, or BYOK URL if provided
+          FIRECRAWL_DOCKER_URL: ${{ github.event.client_payload.firecrawl_docker_url || 'http://localhost:3002' }}
+          FIRECRAWL_DOCKER_API_KEY: ${{ github.event.client_payload.firecrawl_docker_api_key || '' }}
 
           # Job parameters - URLs from previous step
           URLS_JSON: ${{ steps.get-urls.outputs.urls_json }}
