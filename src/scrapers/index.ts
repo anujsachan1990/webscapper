@@ -22,4 +22,7 @@ export {
   setFirecrawlDockerConfig,
   clearFirecrawlDockerConfig,
   testFirecrawlDockerConnection,
+  type FirecrawlDockerScrapeOptions,
+  type FirecrawlScrapeOptions,
+  type CrawlOptions,
 } from "./firecrawl-docker-scraper.js";

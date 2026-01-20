@@ -424,7 +424,31 @@ async function main() {
             scrapedContents = await scrapeMultipleUrls(urlBatch, scrapeOptions);
           } else {
             console.log("🔥 Using Firecrawl Docker (self-hosted) for LLM-optimized scraping");
-            scrapedContents = await firecrawlDockerScraper.scrapeMultipleUrls(urlBatch, scrapeOptions);
+            console.log("   JavaScript rendering: enabled (via Playwright)");
+
+            // Try Firecrawl Docker with JS rendering enabled
+            scrapedContents = await firecrawlDockerScraper.scrapeMultipleUrls(urlBatch, {
+              ...scrapeOptions,
+              waitForJs: true,
+              waitTime: 3000, // Wait 3s for JS content
+              testConnectionFirst: true, // Fail fast if connection issues
+            });
+
+            // If Firecrawl Docker failed to scrape most URLs, fall back to Cheerio
+            const successRate = scrapedContents.length / urlBatch.length;
+            if (successRate < 0.5 && scrapedContents.length < urlBatch.length) {
+              const failedUrls = urlBatch.filter(
+                (url) => !scrapedContents.some((result) => result.url === url)
+              );
+              console.log(
+                `\n⚠️ Firecrawl Docker only scraped ${(successRate * 100).toFixed(0)}% of URLs`
+              );
+              console.log(`🔄 Falling back to Cheerio for ${failedUrls.length} failed URLs...`);
+
+              const cheerioResults = await scrapeMultipleUrls(failedUrls, scrapeOptions);
+              scrapedContents = [...scrapedContents, ...cheerioResults];
+              console.log(`✅ Cheerio rescued ${cheerioResults.length}/${failedUrls.length} URLs`);
+            }
           }
           break;
         }

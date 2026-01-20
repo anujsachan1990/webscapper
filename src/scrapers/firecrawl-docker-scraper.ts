@@ -8,6 +8,8 @@
  * - Scrape individual URLs via self-hosted Firecrawl
  * - Crawl entire websites when sitemap is not available
  * - BYOK support - users can provide their own Firecrawl Docker URL
+ * - Full JavaScript rendering support via Playwright microservice
+ * - Retry logic with exponential backoff for reliability
  *
  * Configuration:
  * - FIRECRAWL_DOCKER_URL: Base URL of the self-hosted Firecrawl instance (e.g., http://localhost:3002)
@@ -18,6 +20,11 @@ import type { ScrapedContent, ScrapeOptions } from "../types.js";
 
 // Default to localhost if not configured (for GitHub Actions with service containers)
 const DEFAULT_FIRECRAWL_DOCKER_URL = "http://localhost:3002";
+
+// Retry configuration
+const MAX_RETRIES = 3;
+const INITIAL_RETRY_DELAY_MS = 1000;
+const MAX_RETRY_DELAY_MS = 10000;
 
 interface FirecrawlDockerConfig {
   baseUrl: string;
@@ -76,6 +83,58 @@ export interface CrawlOptions {
   onProgress?: (completed: number, total: number, status: string) => void;
 }
 
+export interface FirecrawlScrapeOptions {
+  waitForJs?: boolean; // Wait for JavaScript content to load
+  waitTime?: number; // Time to wait for JS content (ms)
+  onlyMainContent?: boolean; // Extract only main content
+  removeScripts?: boolean; // Remove script tags from output
+}
+
+/**
+ * Sleep utility for retry delays
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Calculate exponential backoff delay
+ */
+function getRetryDelay(attempt: number): number {
+  const delay = Math.min(INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt), MAX_RETRY_DELAY_MS);
+  // Add jitter (±25%)
+  const jitter = delay * 0.25 * (Math.random() * 2 - 1);
+  return Math.floor(delay + jitter);
+}
+
+/**
+ * Check if an error is retryable (connection issues, timeouts, 5xx errors)
+ */
+function isRetryableError(error: unknown): boolean {
+  if (error instanceof Error) {
+    const message = error.message.toLowerCase();
+    // Connection errors
+    if (
+      message.includes("econnrefused") ||
+      message.includes("econnreset") ||
+      message.includes("etimedout") ||
+      message.includes("fetch failed") ||
+      message.includes("network")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Check if an HTTP status code is retryable
+ */
+function isRetryableStatus(status: number): boolean {
+  // Retry on server errors (5xx) and rate limiting (429)
+  return status >= 500 || status === 429;
+}
+
 // Dynamic configuration storage for BYOK
 let dynamicConfig: FirecrawlDockerConfig | null = null;
 
@@ -117,58 +176,107 @@ export function isFirecrawlDockerConfigured(): boolean {
 }
 
 /**
- * Test connection to Firecrawl Docker instance
+ * Test connection to Firecrawl Docker instance with retries
  */
 export async function testFirecrawlDockerConnection(): Promise<{
   success: boolean;
   error?: string;
+  supportsJsRendering?: boolean;
 }> {
   const config = getConfig();
 
-  try {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-
-    if (config.apiKey) {
-      headers["Authorization"] = `Bearer ${config.apiKey}`;
-    }
-
-    // Try to hit the health endpoint or scrape endpoint
-    const response = await fetch(`${config.baseUrl}/v1/scrape`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        url: "https://example.com",
-        formats: ["markdown"],
-        onlyMainContent: true,
-      }),
-      signal: AbortSignal.timeout(30000),
-    });
-
-    if (response.ok) {
-      return { success: true };
-    }
-
-    const errorText = await response.text();
+  if (!config.baseUrl) {
     return {
       success: false,
-      error: `Firecrawl Docker returned ${response.status}: ${errorText}`,
-    };
-  } catch (error) {
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Connection failed",
+      error: "FIRECRAWL_DOCKER_URL not configured",
     };
   }
+
+  // Try up to 3 times with exponential backoff
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      if (attempt > 0) {
+        const delay = getRetryDelay(attempt - 1);
+        console.log(`   🔄 Connection test retry ${attempt}/2 (waiting ${delay}ms)...`);
+        await sleep(delay);
+      }
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+
+      if (config.apiKey) {
+        headers["Authorization"] = `Bearer ${config.apiKey}`;
+      }
+
+      // Try to hit a simple test endpoint
+      const response = await fetch(`${config.baseUrl}/v1/scrape`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          url: "https://httpbin.org/html",
+          formats: ["markdown"],
+          onlyMainContent: true,
+          waitFor: 1000, // Test if JS rendering is supported
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+
+      if (response.ok) {
+        const result: FirecrawlScrapeResponse = await response.json();
+        return {
+          success: true,
+          supportsJsRendering: result.success && !!result.data?.markdown,
+        };
+      }
+
+      // 401/402 means service is up but auth is required - still counts as successful connection
+      if (response.status === 401 || response.status === 402) {
+        return {
+          success: true,
+          supportsJsRendering: true,
+        };
+      }
+
+      if (isRetryableStatus(response.status) && attempt < 2) {
+        continue; // Retry on 5xx errors
+      }
+
+      const errorText = await response.text();
+      return {
+        success: false,
+        error: `Firecrawl Docker returned ${response.status}: ${errorText}`,
+      };
+    } catch (error) {
+      if (isRetryableError(error) && attempt < 2) {
+        continue; // Retry on connection errors
+      }
+
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Connection failed",
+      };
+    }
+  }
+
+  return {
+    success: false,
+    error: "All connection attempts failed",
+  };
 }
 
 /**
- * Scrape a single URL using self-hosted Firecrawl Docker
+ * Scrape a single URL using self-hosted Firecrawl Docker with retry logic
+ *
+ * @param url - The URL to scrape
+ * @param timeout - Request timeout in milliseconds (default: 60000)
+ * @param options - Additional scrape options for JavaScript rendering
+ * @returns Scraped content or null if failed
  */
 export async function scrapeWithFirecrawlDocker(
   url: string,
-  timeout = 60000
+  timeout = 60000,
+  options: FirecrawlScrapeOptions = {}
 ): Promise<ScrapedContent | null> {
   const config = getConfig();
 
@@ -177,99 +285,182 @@ export async function scrapeWithFirecrawlDocker(
     return null;
   }
 
-  try {
-    console.log(`🔥 Scraping (Firecrawl Docker): ${url}`);
+  const {
+    waitForJs = true, // Enable JS rendering by default
+    waitTime = 3000, // Wait 3s for JS content by default
+    onlyMainContent = true,
+  } = options;
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
+  let lastError: Error | null = null;
 
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      if (attempt > 0) {
+        const delay = getRetryDelay(attempt - 1);
+        console.log(`   🔄 Retry ${attempt}/${MAX_RETRIES} for ${url} (waiting ${delay}ms)...`);
+        await sleep(delay);
+      } else {
+        console.log(`🔥 Scraping (Firecrawl Docker): ${url}`);
+      }
 
-    if (config.apiKey) {
-      headers["Authorization"] = `Bearer ${config.apiKey}`;
-    }
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-    const response = await fetch(`${config.baseUrl}/v1/scrape`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+
+      if (config.apiKey) {
+        headers["Authorization"] = `Bearer ${config.apiKey}`;
+      }
+
+      // Build scrape request with JavaScript rendering options
+      const scrapeRequest: Record<string, unknown> = {
         url,
         formats: ["markdown"],
-        onlyMainContent: true,
-        waitFor: 2000, // Wait 2s for JS content
-      }),
-      signal: controller.signal,
-    });
+        onlyMainContent,
+      };
 
-    clearTimeout(timeoutId);
+      // Enable JavaScript rendering if requested
+      if (waitForJs) {
+        scrapeRequest.waitFor = waitTime;
+        // Additional options for JS-heavy sites
+        scrapeRequest.actions = [
+          { type: "wait", milliseconds: waitTime },
+        ];
+      }
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`   ❌ Firecrawl Docker API error: ${response.status} - ${errorText}`);
-      return null;
-    }
+      const response = await fetch(`${config.baseUrl}/v1/scrape`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(scrapeRequest),
+        signal: controller.signal,
+      });
 
-    const result: FirecrawlScrapeResponse = await response.json();
+      clearTimeout(timeoutId);
 
-    if (!result.success || !result.data) {
-      console.error(`   ❌ Firecrawl Docker failed: ${result.error || "Unknown error"}`);
-      return null;
-    }
+      // Handle retryable HTTP errors
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`   ❌ Firecrawl Docker API error: ${response.status} - ${errorText}`);
 
-    const { data } = result;
-    const title = data.metadata?.title || "Untitled";
-    const description = data.metadata?.description || "";
-    const content = data.markdown || "";
+        if (isRetryableStatus(response.status) && attempt < MAX_RETRIES) {
+          lastError = new Error(`HTTP ${response.status}: ${errorText}`);
+          continue; // Retry
+        }
+        return null;
+      }
 
-    console.log(`   ✅ Title: ${title.slice(0, 50)}...`);
-    console.log(`   📝 Content length: ${content.length} chars`);
+      const result: FirecrawlScrapeResponse = await response.json();
 
-    // Extract images from markdown (basic extraction)
-    const images: Array<{ src: string; alt?: string }> = [];
-    const imageRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
-    let match;
-    while ((match = imageRegex.exec(content)) !== null) {
-      const [, alt, src] = match;
-      if (src && src.startsWith("http")) {
-        images.push({ src, alt: alt || undefined });
+      if (!result.success || !result.data) {
+        console.error(`   ❌ Firecrawl Docker failed: ${result.error || "Unknown error"}`);
+        return null;
+      }
+
+      const { data } = result;
+      const title = data.metadata?.title || "Untitled";
+      const description = data.metadata?.description || "";
+      const content = data.markdown || "";
+
+      console.log(`   ✅ Title: ${title.slice(0, 50)}...`);
+      console.log(`   📝 Content length: ${content.length} chars`);
+
+      // Extract images from markdown (basic extraction)
+      const images: Array<{ src: string; alt?: string }> = [];
+      const imageRegex = /!\[([^\]]*)\]\(([^)]+)\)/g;
+      let match;
+      while ((match = imageRegex.exec(content)) !== null) {
+        const [, alt, src] = match;
+        if (src && src.startsWith("http")) {
+          images.push({ src, alt: alt || undefined });
+        }
+      }
+
+      // Also add og:image if available
+      if (data.metadata?.ogImage) {
+        images.unshift({ src: data.metadata.ogImage, alt: "Open Graph Image" });
+      }
+
+      console.log(`   🖼️  Images found: ${images.length}`);
+
+      return {
+        url,
+        title: title.split("|")[0].split("-")[0].trim(),
+        content: `${description}\n\n${content}`,
+        description,
+        timestamp: Date.now(),
+        images: images.slice(0, 20),
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+
+      if (error instanceof Error && error.name === "AbortError") {
+        console.error(`   ❌ Firecrawl Docker timeout for ${url}`);
+        // Timeouts are retryable
+        if (attempt < MAX_RETRIES) {
+          continue;
+        }
+      } else if (isRetryableError(error) && attempt < MAX_RETRIES) {
+        console.error(`   ⚠️ Connection error (will retry): ${lastError.message}`);
+        continue;
+      } else {
+        console.error(`   ❌ Error scraping ${url} with Firecrawl Docker:`, error);
+      }
+
+      // Final attempt failed
+      if (attempt === MAX_RETRIES) {
+        console.error(`   ❌ All ${MAX_RETRIES + 1} attempts failed for ${url}`);
       }
     }
-
-    // Also add og:image if available
-    if (data.metadata?.ogImage) {
-      images.unshift({ src: data.metadata.ogImage, alt: "Open Graph Image" });
-    }
-
-    console.log(`   🖼️  Images found: ${images.length}`);
-
-    return {
-      url,
-      title: title.split("|")[0].split("-")[0].trim(),
-      content: `${description}\n\n${content}`,
-      description,
-      timestamp: Date.now(),
-      images: images.slice(0, 20),
-    };
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      console.error(`   ❌ Firecrawl Docker timeout for ${url}`);
-    } else {
-      console.error(`   ❌ Error scraping ${url} with Firecrawl Docker:`, error);
-    }
-    return null;
   }
+
+  return null;
+}
+
+/**
+ * Extended scrape options for Firecrawl Docker
+ */
+export interface FirecrawlDockerScrapeOptions extends ScrapeOptions {
+  waitForJs?: boolean; // Enable JavaScript rendering (default: true)
+  waitTime?: number; // Time to wait for JS content in ms (default: 3000)
+  testConnectionFirst?: boolean; // Test connection before scraping (default: true)
 }
 
 /**
  * Scrape multiple URLs with Firecrawl Docker
+ *
+ * @param urls - Array of URLs to scrape
+ * @param options - Scrape options including JavaScript rendering settings
+ * @returns Array of successfully scraped content
  */
 export async function scrapeMultipleUrlsWithFirecrawlDocker(
   urls: string[],
-  options: ScrapeOptions = {}
+  options: FirecrawlDockerScrapeOptions = {}
 ): Promise<ScrapedContent[]> {
-  const { concurrency = 3, timeout = 60000, onProgress } = options;
+  const {
+    concurrency = 3,
+    timeout = 60000,
+    onProgress,
+    waitForJs = true,
+    waitTime = 3000,
+    testConnectionFirst = true,
+  } = options;
+
+  // Optionally test connection first to fail fast
+  if (testConnectionFirst) {
+    console.log("🔥 Testing Firecrawl Docker connection...");
+    const connectionTest = await testFirecrawlDockerConnection();
+    if (!connectionTest.success) {
+      console.error(`❌ Firecrawl Docker connection failed: ${connectionTest.error}`);
+      console.log("⚠️ Returning empty results - consider falling back to another scraper");
+      return [];
+    }
+    console.log(
+      `✅ Firecrawl Docker connected (JS rendering: ${connectionTest.supportsJsRendering ? "enabled" : "unknown"})`
+    );
+  }
+
   const results: ScrapedContent[] = [];
 
   for (let i = 0; i < urls.length; i += concurrency) {
@@ -280,7 +471,11 @@ export async function scrapeMultipleUrlsWithFirecrawlDocker(
         if (onProgress) {
           onProgress(i + index, urls.length, url);
         }
-        return scrapeWithFirecrawlDocker(url, timeout);
+        return scrapeWithFirecrawlDocker(url, timeout, {
+          waitForJs,
+          waitTime,
+          onlyMainContent: true,
+        });
       })
     );
 
@@ -288,10 +483,11 @@ export async function scrapeMultipleUrlsWithFirecrawlDocker(
 
     // Small delay between batches to respect rate limits
     if (i + concurrency < urls.length) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await sleep(500);
     }
   }
 
+  console.log(`📊 Firecrawl Docker: ${results.length}/${urls.length} URLs scraped successfully`);
   return results;
 }
 

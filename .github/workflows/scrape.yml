@@ -121,6 +121,17 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+      # Playwright microservice for full JavaScript rendering
+      playwright:
+        image: ghcr.io/nicholasgriffintn/playwright-service:latest
+        ports:
+          - 3000:3000
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -154,12 +165,24 @@ jobs:
         run: |
           echo "🔥 Starting Firecrawl Docker container..."
           
+          # Wait for Playwright service to be ready first
+          echo "⏳ Waiting for Playwright service..."
+          for i in {1..30}; do
+            if curl -s http://localhost:3000/health > /dev/null 2>&1; then
+              echo "✅ Playwright service is ready!"
+              break
+            fi
+            echo "   Attempt $i/30 - Playwright not ready yet..."
+            sleep 2
+          done
+          
           # Pull from GitHub Container Registry (correct image location)
           docker pull ghcr.io/mendableai/firecrawl:latest || {
             echo "⚠️ Failed to pull from ghcr.io, trying Docker Hub..."
             docker pull firecrawl/firecrawl:latest || {
               echo "❌ Could not pull Firecrawl image from any registry"
-              echo "ℹ️ Using BYOK Firecrawl Docker URL if configured, otherwise will fall back to Cheerio"
+              echo "ℹ️ Will fall back to Cheerio scraper"
+              echo "FIRECRAWL_AVAILABLE=false" >> $GITHUB_ENV
               exit 0
             }
           }
@@ -172,49 +195,69 @@ jobs:
           
           echo "📦 Using image: $IMAGE_NAME"
           
-          # Start Firecrawl container
+          # Start Firecrawl container with Playwright enabled for full JS rendering
           docker run -d \
             --name firecrawl \
             --network host \
             -e REDIS_URL=redis://localhost:6379 \
             -e REDIS_RATE_LIMIT_URL=redis://localhost:6379 \
-            -e PLAYWRIGHT_MICROSERVICE_URL="" \
+            -e PLAYWRIGHT_MICROSERVICE_URL=http://localhost:3000 \
             -e USE_DB_AUTHENTICATION=false \
             -e PORT=3002 \
             -e HOST=0.0.0.0 \
             -e NUM_WORKERS_PER_QUEUE=2 \
             -e LOGGING_LEVEL=info \
+            -e SCRAPING_BEE_API_KEY="" \
+            -e BLOCK_MEDIA=false \
             $IMAGE_NAME
           
           echo "⏳ Waiting for Firecrawl to be ready..."
           
-          # Wait for Firecrawl to be healthy (up to 3 minutes)
-          for i in {1..36}; do
+          # Wait for Firecrawl to be healthy (up to 5 minutes with longer intervals)
+          FIRECRAWL_READY=false
+          for i in {1..60}; do
             # Check if container is still running
             if ! docker ps | grep -q firecrawl; then
               echo "❌ Firecrawl container stopped unexpectedly"
               docker logs firecrawl --tail 100
-              exit 1
+              echo "FIRECRAWL_AVAILABLE=false" >> $GITHUB_ENV
+              exit 0  # Don't fail the job, will fallback to Cheerio
             fi
             
-            # Try to hit the scrape endpoint
-            RESPONSE=$(curl -s -w "%{http_code}" -o /tmp/firecrawl_response.json \
+            # Try to hit the health/scrape endpoint
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+               --max-time 10 \
                http://localhost:3002/v1/scrape -X POST \
                -H "Content-Type: application/json" \
-               -d '{"url":"https://example.com","formats":["markdown"]}' 2>/dev/null || echo "000")
+               -d '{"url":"https://httpbin.org/html","formats":["markdown"]}' 2>/dev/null || echo "000")
             
-            if [ "$RESPONSE" = "200" ] || [ "$RESPONSE" = "401" ] || [ "$RESPONSE" = "402" ]; then
-              echo "✅ Firecrawl Docker is ready! (HTTP $RESPONSE)"
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✅ Firecrawl Docker is ready! (HTTP $HTTP_CODE)"
+              FIRECRAWL_READY=true
+              echo "FIRECRAWL_AVAILABLE=true" >> $GITHUB_ENV
               break
             fi
             
-            echo "   Attempt $i/36 - Firecrawl not ready yet (HTTP $RESPONSE)..."
+            # Also accept 401/402 as "service is up but auth required"
+            if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "402" ]; then
+              echo "✅ Firecrawl Docker is responding (HTTP $HTTP_CODE - auth mode)"
+              FIRECRAWL_READY=true
+              echo "FIRECRAWL_AVAILABLE=true" >> $GITHUB_ENV
+              break
+            fi
+            
+            echo "   Attempt $i/60 - Firecrawl not ready yet (HTTP $HTTP_CODE)..."
             sleep 5
           done
           
+          if [ "$FIRECRAWL_READY" = "false" ]; then
+            echo "⚠️ Firecrawl failed to start in time, will fall back to Cheerio"
+            echo "FIRECRAWL_AVAILABLE=false" >> $GITHUB_ENV
+          fi
+          
           # Show container logs for debugging
           echo "📋 Firecrawl container logs:"
-          docker logs firecrawl --tail 30
+          docker logs firecrawl --tail 50
 
       - name: Determine URLs for this chunk
         id: get-urls
@@ -305,16 +348,30 @@ jobs:
           BRAND_SLUG: ${{ github.event.client_payload.brand_slug || github.event.inputs.brand_slug }}
           JOB_ID: ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
           CALLBACK_URL: ${{ github.event.client_payload.callback_url || '' }}
-          SCRAPER_ENGINE: ${{ github.event.client_payload.engine || github.event.inputs.engine || 'cheerio' }}
-
+          
           # Chunk processing metadata
           CHUNK_ID: ${{ matrix.chunk }}
           TOTAL_CHUNKS: ${{ github.event.client_payload.total_chunks_count || github.event.inputs.total_chunks || 1 }}
         run: |
+          # Determine engine with fallback logic
+          REQUESTED_ENGINE="${{ github.event.client_payload.engine || github.event.inputs.engine || 'cheerio' }}"
+          
+          # If firecrawl-docker was requested but isn't available, fall back to cheerio
+          if [ "$REQUESTED_ENGINE" = "firecrawl-docker" ] && [ "$FIRECRAWL_AVAILABLE" = "false" ]; then
+            echo "⚠️ Firecrawl Docker not available, falling back to Cheerio"
+            SCRAPER_ENGINE="cheerio"
+          else
+            SCRAPER_ENGINE="$REQUESTED_ENGINE"
+          fi
+          
+          export SCRAPER_ENGINE
+          
           echo "🚀 Starting scrape job (Chunk $CHUNK_ID/$TOTAL_CHUNKS)"
           echo "   Brand: $BRAND_SLUG"
           echo "   Job ID: $JOB_ID"
-          echo "   Engine: $SCRAPER_ENGINE"
+          echo "   Requested Engine: $REQUESTED_ENGINE"
+          echo "   Actual Engine: $SCRAPER_ENGINE"
+          echo "   Firecrawl Available: ${FIRECRAWL_AVAILABLE:-not-set}"
           echo "   Memory limit: $NODE_OPTIONS"
           echo "   URLs count: $(echo "$URLS_JSON" | jq -r 'length' 2>/dev/null || echo 'unknown')"
           
