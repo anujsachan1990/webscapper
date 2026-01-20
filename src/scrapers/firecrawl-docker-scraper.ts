@@ -315,27 +315,16 @@ export async function scrapeWithFirecrawlDocker(
       }
 
       // Build scrape request with JavaScript rendering options
+      // Using Firecrawl v2 API format
       const scrapeRequest: Record<string, unknown> = {
         url,
         formats: ["markdown"],
         onlyMainContent,
-        // Timeout for the scrape operation (in ms)
-        timeout: timeout,
       };
 
       // Enable JavaScript rendering if requested
       if (waitForJs) {
         scrapeRequest.waitFor = waitTime;
-        // Additional options for JS-heavy sites and anti-bot bypass
-        scrapeRequest.actions = [
-          { type: "wait", milliseconds: Math.min(waitTime, 5000) },
-          { type: "scroll", direction: "down" }, // Scroll to trigger lazy loading
-          { type: "wait", milliseconds: 1000 },
-        ];
-        // Request mobile user agent which often has less anti-bot protection
-        scrapeRequest.mobile = false;
-        // Block unnecessary resources to speed up loading
-        scrapeRequest.blockMedia = true;
       }
 
       const response = await fetch(`${config.baseUrl}/v1/scrape`, {
