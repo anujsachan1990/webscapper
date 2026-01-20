@@ -154,41 +154,67 @@ jobs:
         run: |
           echo "🔥 Starting Firecrawl Docker container..."
           
-          # Pull and start Firecrawl container
+          # Pull from GitHub Container Registry (correct image location)
+          docker pull ghcr.io/mendableai/firecrawl:latest || {
+            echo "⚠️ Failed to pull from ghcr.io, trying Docker Hub..."
+            docker pull firecrawl/firecrawl:latest || {
+              echo "❌ Could not pull Firecrawl image from any registry"
+              echo "ℹ️ Using BYOK Firecrawl Docker URL if configured, otherwise will fall back to Cheerio"
+              exit 0
+            }
+          }
+          
+          # Determine which image was pulled
+          IMAGE_NAME="ghcr.io/mendableai/firecrawl:latest"
+          if ! docker images | grep -q "ghcr.io/mendableai/firecrawl"; then
+            IMAGE_NAME="firecrawl/firecrawl:latest"
+          fi
+          
+          echo "📦 Using image: $IMAGE_NAME"
+          
+          # Start Firecrawl container
           docker run -d \
             --name firecrawl \
             --network host \
             -e REDIS_URL=redis://localhost:6379 \
-            -e POSTGRES_URL=postgres://firecrawl:firecrawl@localhost:5432/firecrawl \
+            -e REDIS_RATE_LIMIT_URL=redis://localhost:6379 \
+            -e PLAYWRIGHT_MICROSERVICE_URL="" \
             -e USE_DB_AUTHENTICATION=false \
             -e PORT=3002 \
             -e HOST=0.0.0.0 \
-            -e SCRAPING_BEE_API_KEY="" \
-            -e OPENAI_API_KEY="" \
-            -e BULL_AUTH_KEY="" \
-            -e TEST_API_KEY="" \
             -e NUM_WORKERS_PER_QUEUE=2 \
             -e LOGGING_LEVEL=info \
-            -e PLAYWRIGHT_MICROSERVICE_URL="" \
-            mendableai/firecrawl:latest
+            $IMAGE_NAME
           
           echo "⏳ Waiting for Firecrawl to be ready..."
           
           # Wait for Firecrawl to be healthy (up to 3 minutes)
           for i in {1..36}; do
-            if curl -s http://localhost:3002/v1/scrape -X POST \
+            # Check if container is still running
+            if ! docker ps | grep -q firecrawl; then
+              echo "❌ Firecrawl container stopped unexpectedly"
+              docker logs firecrawl --tail 100
+              exit 1
+            fi
+            
+            # Try to hit the scrape endpoint
+            RESPONSE=$(curl -s -w "%{http_code}" -o /tmp/firecrawl_response.json \
+               http://localhost:3002/v1/scrape -X POST \
                -H "Content-Type: application/json" \
-               -d '{"url":"https://example.com","formats":["markdown"]}' \
-               | grep -q "success"; then
-              echo "✅ Firecrawl Docker is ready!"
+               -d '{"url":"https://example.com","formats":["markdown"]}' 2>/dev/null || echo "000")
+            
+            if [ "$RESPONSE" = "200" ] || [ "$RESPONSE" = "401" ] || [ "$RESPONSE" = "402" ]; then
+              echo "✅ Firecrawl Docker is ready! (HTTP $RESPONSE)"
               break
             fi
-            echo "   Attempt $i/36 - Firecrawl not ready yet..."
+            
+            echo "   Attempt $i/36 - Firecrawl not ready yet (HTTP $RESPONSE)..."
             sleep 5
           done
           
-          # Check if Firecrawl started successfully
-          docker logs firecrawl --tail 50
+          # Show container logs for debugging
+          echo "📋 Firecrawl container logs:"
+          docker logs firecrawl --tail 30
 
       - name: Determine URLs for this chunk
         id: get-urls
