@@ -135,16 +135,19 @@ jobs:
           git clone --depth 1 https://github.com/mendableai/firecrawl.git /tmp/firecrawl
           cd /tmp/firecrawl
           
-          # Create minimal .env file for self-hosted setup
+          # Create .env file with proper Playwright configuration
           echo "📝 Creating Firecrawl configuration..."
-          cat > .env << 'EOF'
+          cat > .env << 'ENVEOF'
           PORT=3002
           HOST=0.0.0.0
           USE_DB_AUTHENTICATION=false
           BULL_AUTH_KEY=firecrawl-local
-          LOGGING_LEVEL=info
-          NUM_WORKERS_PER_QUEUE=2
-          EOF
+          LOGGING_LEVEL=debug
+          NUM_WORKERS_PER_QUEUE=4
+          PLAYWRIGHT_MICROSERVICE_URL=http://playwright-service:3000/scrape
+          REDIS_URL=redis://redis:6379
+          REDIS_RATE_LIMIT_URL=redis://redis:6379
+          ENVEOF
           # Remove leading whitespace from .env file
           sed -i 's/^[[:space:]]*//' .env
           echo "📄 .env file contents:"
@@ -152,8 +155,33 @@ jobs:
           
           # Build and start all Firecrawl services (API, Redis, Playwright)
           echo "🐳 Building and starting Firecrawl services..."
-          docker compose build --quiet
+          docker compose build
           docker compose up -d
+          
+          # Wait for services to start
+          sleep 10
+          
+          # Show all running containers
+          echo "📋 Docker containers:"
+          docker ps -a
+          
+          # Check Playwright service health specifically
+          echo ""
+          echo "🎭 Checking Playwright service..."
+          for i in {1..30}; do
+            PLAYWRIGHT_STATUS=$(docker compose exec -T playwright-service wget -q -O - http://localhost:3000/health 2>/dev/null || echo "not ready")
+            if [ "$PLAYWRIGHT_STATUS" != "not ready" ]; then
+              echo "✅ Playwright service is healthy!"
+              break
+            fi
+            echo "   Attempt $i/30 - Playwright service starting..."
+            sleep 3
+          done
+          
+          # Show Playwright service logs
+          echo ""
+          echo "📋 Playwright service logs:"
+          docker compose logs playwright-service --tail 30
           
           echo "⏳ Waiting for Firecrawl services to be ready..."
           
@@ -161,28 +189,36 @@ jobs:
           FIRECRAWL_READY=false
           for i in {1..60}; do
             # Check if all containers are running
-            RUNNING_CONTAINERS=$(docker compose ps --status running -q | wc -l)
-            TOTAL_CONTAINERS=$(docker compose ps -q | wc -l)
+            RUNNING_CONTAINERS=$(docker compose ps --status running -q 2>/dev/null | wc -l)
+            TOTAL_CONTAINERS=$(docker compose ps -q 2>/dev/null | wc -l)
             
             echo "   Attempt $i/60 - Containers: $RUNNING_CONTAINERS/$TOTAL_CONTAINERS running"
             
-            # Try to hit the scrape endpoint
+            # Try to hit the scrape endpoint with a simple URL
             HTTP_CODE=$(curl -s -o /tmp/firecrawl_response.json -w "%{http_code}" \
-               --max-time 15 \
+               --max-time 30 \
                http://localhost:3002/v1/scrape -X POST \
                -H "Content-Type: application/json" \
-               -d '{"url":"https://example.com","formats":["markdown"]}' 2>/dev/null || echo "000")
+               -d '{"url":"https://httpbin.org/html","formats":["markdown"]}' 2>/dev/null || echo "000")
             
             if [ "$HTTP_CODE" = "200" ]; then
-              echo "✅ Firecrawl is ready with JavaScript rendering! (HTTP $HTTP_CODE)"
+              echo "✅ Firecrawl is ready! (HTTP $HTTP_CODE)"
               FIRECRAWL_READY=true
               
               # Verify response has content
               if [ -f /tmp/firecrawl_response.json ]; then
+                SUCCESS=$(cat /tmp/firecrawl_response.json | jq -r '.success // false')
                 CONTENT_LENGTH=$(cat /tmp/firecrawl_response.json | jq -r '.data.markdown // ""' | wc -c)
-                echo "   Response content length: $CONTENT_LENGTH chars"
+                echo "   Success: $SUCCESS, Content length: $CONTENT_LENGTH chars"
+                
+                if [ "$SUCCESS" = "true" ] && [ "$CONTENT_LENGTH" -gt 100 ]; then
+                  echo "✅ Scraping is working correctly!"
+                  break
+                else
+                  echo "   ⚠️ Response indicates failure, checking logs..."
+                  cat /tmp/firecrawl_response.json | jq '.' 2>/dev/null
+                fi
               fi
-              break
             fi
             
             # Accept 401/402 as service is up (auth mode)
@@ -190,6 +226,12 @@ jobs:
               echo "✅ Firecrawl is responding (HTTP $HTTP_CODE - auth mode)"
               FIRECRAWL_READY=true
               break
+            fi
+            
+            # Check for 500 errors - might mean Playwright isn't ready
+            if [ "$HTTP_CODE" = "500" ]; then
+              echo "   ⚠️ Got 500 error - checking if Playwright service is ready..."
+              docker compose logs playwright-service --tail 10 2>/dev/null || true
             fi
             
             echo "   HTTP response: $HTTP_CODE - waiting..."
@@ -204,8 +246,11 @@ jobs:
             echo "📋 API container logs:"
             docker compose logs api --tail 100
             echo ""
+            echo "📋 Worker container logs:"
+            docker compose logs worker --tail 100 2>/dev/null || echo "No worker logs"
+            echo ""
             echo "📋 Playwright service logs:"
-            docker compose logs playwright-service --tail 50 2>/dev/null || echo "No playwright-service logs"
+            docker compose logs playwright-service --tail 100 2>/dev/null || echo "No playwright-service logs"
             exit 1
           fi
           
@@ -213,18 +258,27 @@ jobs:
           echo "📋 Firecrawl services running:"
           docker compose ps
           
-          # Test JavaScript rendering capability
+          # Test with a more complex URL to verify JavaScript rendering
           echo ""
-          echo "🧪 Testing JavaScript rendering..."
-          JS_TEST=$(curl -s -X POST http://localhost:3002/v1/scrape \
+          echo "🧪 Testing JavaScript rendering with dynamic content..."
+          JS_TEST=$(curl -s --max-time 60 -X POST http://localhost:3002/v1/scrape \
             -H "Content-Type: application/json" \
-            -d '{"url":"https://example.com","formats":["markdown"],"waitFor":2000}' 2>/dev/null)
+            -d '{"url":"https://quotes.toscrape.com/js/","formats":["markdown"],"waitFor":5000}' 2>/dev/null)
           
           if echo "$JS_TEST" | jq -e '.success == true' > /dev/null 2>&1; then
-            echo "✅ JavaScript rendering is working!"
+            CONTENT=$(echo "$JS_TEST" | jq -r '.data.markdown // ""')
+            if echo "$CONTENT" | grep -q "quote"; then
+              echo "✅ JavaScript rendering is working! (found dynamic content)"
+            else
+              echo "⚠️ JavaScript rendering may have issues (no dynamic content found)"
+              echo "   This might affect JS-heavy sites"
+            fi
           else
-            echo "⚠️ JavaScript rendering test returned unexpected result"
+            echo "⚠️ JavaScript rendering test failed"
             echo "$JS_TEST" | jq '.' 2>/dev/null || echo "$JS_TEST"
+            echo ""
+            echo "📋 Worker logs for debugging:"
+            docker compose logs worker --tail 50 2>/dev/null || true
           fi
 
       - name: Determine URLs for this chunk
@@ -340,8 +394,24 @@ jobs:
       - name: Show Firecrawl Logs on Failure
         if: failure() && (github.event.client_payload.engine == 'firecrawl-docker' || github.event.inputs.engine == 'firecrawl-docker')
         run: |
-          echo "📋 Firecrawl container logs (for debugging):"
-          cd /tmp/firecrawl 2>/dev/null && docker compose logs --tail 200 || echo "No Firecrawl logs available"
+          echo "📋 Firecrawl container status:"
+          cd /tmp/firecrawl 2>/dev/null && docker compose ps || echo "No Firecrawl containers"
+          
+          echo ""
+          echo "📋 API container logs:"
+          cd /tmp/firecrawl 2>/dev/null && docker compose logs api --tail 100 || echo "No API logs"
+          
+          echo ""
+          echo "📋 Worker container logs:"
+          cd /tmp/firecrawl 2>/dev/null && docker compose logs worker --tail 100 || echo "No worker logs"
+          
+          echo ""
+          echo "📋 Playwright service logs:"
+          cd /tmp/firecrawl 2>/dev/null && docker compose logs playwright-service --tail 100 || echo "No Playwright logs"
+          
+          echo ""
+          echo "📋 Redis logs:"
+          cd /tmp/firecrawl 2>/dev/null && docker compose logs redis --tail 50 || echo "No Redis logs"
 
       # Cleanup Firecrawl containers
       - name: Cleanup Firecrawl Docker

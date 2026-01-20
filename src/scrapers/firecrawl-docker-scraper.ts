@@ -269,13 +269,13 @@ export async function testFirecrawlDockerConnection(): Promise<{
  * Scrape a single URL using self-hosted Firecrawl Docker with retry logic
  *
  * @param url - The URL to scrape
- * @param timeout - Request timeout in milliseconds (default: 60000)
+ * @param timeout - Request timeout in milliseconds (default: 90000)
  * @param options - Additional scrape options for JavaScript rendering
  * @returns Scraped content or null if failed
  */
 export async function scrapeWithFirecrawlDocker(
   url: string,
-  timeout = 60000,
+  timeout = 90000, // Increased default timeout for complex sites
   options: FirecrawlScrapeOptions = {}
 ): Promise<ScrapedContent | null> {
   const config = getConfig();
@@ -287,7 +287,7 @@ export async function scrapeWithFirecrawlDocker(
 
   const {
     waitForJs = true, // Enable JS rendering by default
-    waitTime = 3000, // Wait 3s for JS content by default
+    waitTime = 5000, // Wait 5s for JS content by default (increased)
     onlyMainContent = true,
   } = options;
 
@@ -319,15 +319,23 @@ export async function scrapeWithFirecrawlDocker(
         url,
         formats: ["markdown"],
         onlyMainContent,
+        // Timeout for the scrape operation (in ms)
+        timeout: timeout,
       };
 
       // Enable JavaScript rendering if requested
       if (waitForJs) {
         scrapeRequest.waitFor = waitTime;
-        // Additional options for JS-heavy sites
+        // Additional options for JS-heavy sites and anti-bot bypass
         scrapeRequest.actions = [
-          { type: "wait", milliseconds: waitTime },
+          { type: "wait", milliseconds: Math.min(waitTime, 5000) },
+          { type: "scroll", direction: "down" }, // Scroll to trigger lazy loading
+          { type: "wait", milliseconds: 1000 },
         ];
+        // Request mobile user agent which often has less anti-bot protection
+        scrapeRequest.mobile = false;
+        // Block unnecessary resources to speed up loading
+        scrapeRequest.blockMedia = true;
       }
 
       const response = await fetch(`${config.baseUrl}/v1/scrape`, {
@@ -343,6 +351,19 @@ export async function scrapeWithFirecrawlDocker(
       if (!response.ok) {
         const errorText = await response.text();
         console.error(`   ❌ Firecrawl Docker API error: ${response.status} - ${errorText}`);
+
+        // Parse error for more details
+        try {
+          const errorJson = JSON.parse(errorText);
+          if (errorJson.code === "SCRAPE_ALL_ENGINES_FAILED") {
+            console.error(`   ℹ️  This usually means:`);
+            console.error(`      - The Playwright service is not accessible`);
+            console.error(`      - The site has anti-bot protection`);
+            console.error(`      - The URL is invalid or blocked`);
+          }
+        } catch {
+          // Not JSON, ignore
+        }
 
         if (isRetryableStatus(response.status) && attempt < MAX_RETRIES) {
           lastError = new Error(`HTTP ${response.status}: ${errorText}`);
@@ -439,11 +460,11 @@ export async function scrapeMultipleUrlsWithFirecrawlDocker(
   options: FirecrawlDockerScrapeOptions = {}
 ): Promise<ScrapedContent[]> {
   const {
-    concurrency = 3,
-    timeout = 60000,
+    concurrency = 2, // Reduced concurrency to avoid overwhelming Playwright
+    timeout = 90000, // Increased timeout for complex sites
     onProgress,
     waitForJs = true,
-    waitTime = 3000,
+    waitTime = 5000, // Increased wait time for JS content
     testConnectionFirst = true,
   } = options;
 
