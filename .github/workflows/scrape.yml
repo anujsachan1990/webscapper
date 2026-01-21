@@ -42,7 +42,7 @@ on:
         required: false
         default: ""
       engine:
-        description: "Scraper engine (cheerio, puppeteer, or firecrawl)"
+        description: "Scraper engine (cheerio, puppeteer, firecrawl, or firecrawl-docker)"
         required: false
         default: "cheerio"
         type: choice
@@ -50,6 +50,7 @@ on:
           - cheerio
           - puppeteer
           - firecrawl
+          - firecrawl-docker
       total_chunks:
         description: "Total number of chunks for parallel processing"
         required: false
@@ -92,6 +93,9 @@ jobs:
         chunk: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     name: scrape-chunk-${{ matrix.chunk }}
 
+    # Note: Firecrawl Docker is started manually in a step below using the official docker-compose
+    # This ensures proper setup of all services including Playwright for JavaScript rendering
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -118,6 +122,164 @@ jobs:
         uses: browser-actions/setup-chrome@latest
         with:
           chrome-version: stable
+
+      # Start Firecrawl Docker using official docker-compose (if using firecrawl-docker engine)
+      # This includes the Playwright service for full JavaScript rendering
+      - name: Start Firecrawl Docker
+        if: github.event.client_payload.engine == 'firecrawl-docker' || github.event.inputs.engine == 'firecrawl-docker'
+        run: |
+          echo "🔥 Setting up Firecrawl with full JavaScript rendering support..."
+          
+          # Clone the official Firecrawl repository
+          echo "📥 Cloning Firecrawl repository..."
+          git clone --depth 1 https://github.com/mendableai/firecrawl.git /tmp/firecrawl
+          cd /tmp/firecrawl
+          
+          # Create .env file with proper Playwright configuration
+          echo "📝 Creating Firecrawl configuration..."
+          cat > .env << 'ENVEOF'
+          PORT=3002
+          HOST=0.0.0.0
+          USE_DB_AUTHENTICATION=false
+          BULL_AUTH_KEY=firecrawl-local
+          LOGGING_LEVEL=debug
+          NUM_WORKERS_PER_QUEUE=4
+          PLAYWRIGHT_MICROSERVICE_URL=http://playwright-service:3000/scrape
+          REDIS_URL=redis://redis:6379
+          REDIS_RATE_LIMIT_URL=redis://redis:6379
+          ENVEOF
+          # Remove leading whitespace from .env file
+          sed -i 's/^[[:space:]]*//' .env
+          echo "📄 .env file contents:"
+          cat .env
+          
+          # Build and start all Firecrawl services (API, Redis, Playwright)
+          echo "🐳 Building and starting Firecrawl services..."
+          docker compose build
+          docker compose up -d
+          
+          # Wait for services to start
+          sleep 10
+          
+          # Show all running containers
+          echo "📋 Docker containers:"
+          docker ps -a
+          
+          # Check Playwright service health specifically
+          echo ""
+          echo "🎭 Checking Playwright service..."
+          for i in {1..30}; do
+            PLAYWRIGHT_STATUS=$(docker compose exec -T playwright-service wget -q -O - http://localhost:3000/health 2>/dev/null || echo "not ready")
+            if [ "$PLAYWRIGHT_STATUS" != "not ready" ]; then
+              echo "✅ Playwright service is healthy!"
+              break
+            fi
+            echo "   Attempt $i/30 - Playwright service starting..."
+            sleep 3
+          done
+          
+          # Show Playwright service logs
+          echo ""
+          echo "📋 Playwright service logs:"
+          docker compose logs playwright-service --tail 30
+          
+          echo "⏳ Waiting for Firecrawl services to be ready..."
+          
+          # Wait for all services to be healthy (up to 5 minutes)
+          FIRECRAWL_READY=false
+          for i in {1..60}; do
+            # Check if all containers are running
+            RUNNING_CONTAINERS=$(docker compose ps --status running -q 2>/dev/null | wc -l)
+            TOTAL_CONTAINERS=$(docker compose ps -q 2>/dev/null | wc -l)
+            
+            echo "   Attempt $i/60 - Containers: $RUNNING_CONTAINERS/$TOTAL_CONTAINERS running"
+            
+            # Try to hit the scrape endpoint with a simple URL
+            HTTP_CODE=$(curl -s -o /tmp/firecrawl_response.json -w "%{http_code}" \
+               --max-time 30 \
+               http://localhost:3002/v1/scrape -X POST \
+               -H "Content-Type: application/json" \
+               -d '{"url":"https://httpbin.org/html","formats":["markdown"]}' 2>/dev/null || echo "000")
+            
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✅ Firecrawl is ready! (HTTP $HTTP_CODE)"
+              FIRECRAWL_READY=true
+              
+              # Verify response has content
+              if [ -f /tmp/firecrawl_response.json ]; then
+                SUCCESS=$(cat /tmp/firecrawl_response.json | jq -r '.success // false')
+                CONTENT_LENGTH=$(cat /tmp/firecrawl_response.json | jq -r '.data.markdown // ""' | wc -c)
+                echo "   Success: $SUCCESS, Content length: $CONTENT_LENGTH chars"
+                
+                if [ "$SUCCESS" = "true" ] && [ "$CONTENT_LENGTH" -gt 100 ]; then
+                  echo "✅ Scraping is working correctly!"
+                  break
+                else
+                  echo "   ⚠️ Response indicates failure, checking logs..."
+                  cat /tmp/firecrawl_response.json | jq '.' 2>/dev/null
+                fi
+              fi
+            fi
+            
+            # Accept 401/402 as service is up (auth mode)
+            if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "402" ]; then
+              echo "✅ Firecrawl is responding (HTTP $HTTP_CODE - auth mode)"
+              FIRECRAWL_READY=true
+              break
+            fi
+            
+            # Check for 500 errors - might mean Playwright isn't ready
+            if [ "$HTTP_CODE" = "500" ]; then
+              echo "   ⚠️ Got 500 error - checking if Playwright service is ready..."
+              docker compose logs playwright-service --tail 10 2>/dev/null || true
+            fi
+            
+            echo "   HTTP response: $HTTP_CODE - waiting..."
+            sleep 5
+          done
+          
+          if [ "$FIRECRAWL_READY" = "false" ]; then
+            echo "❌ Firecrawl failed to start properly"
+            echo "📋 Container status:"
+            docker compose ps
+            echo ""
+            echo "📋 API container logs:"
+            docker compose logs api --tail 100
+            echo ""
+            echo "📋 Worker container logs:"
+            docker compose logs worker --tail 100 2>/dev/null || echo "No worker logs"
+            echo ""
+            echo "📋 Playwright service logs:"
+            docker compose logs playwright-service --tail 100 2>/dev/null || echo "No playwright-service logs"
+            exit 1
+          fi
+          
+          # Show running services
+          echo "📋 Firecrawl services running:"
+          docker compose ps
+          
+          # Test with a more complex URL to verify JavaScript rendering
+          echo ""
+          echo "🧪 Testing JavaScript rendering with dynamic content..."
+          JS_TEST=$(curl -s --max-time 60 -X POST http://localhost:3002/v1/scrape \
+            -H "Content-Type: application/json" \
+            -d '{"url":"https://quotes.toscrape.com/js/","formats":["markdown"],"waitFor":5000}' 2>/dev/null)
+          
+          if echo "$JS_TEST" | jq -e '.success == true' > /dev/null 2>&1; then
+            CONTENT=$(echo "$JS_TEST" | jq -r '.data.markdown // ""')
+            if echo "$CONTENT" | grep -q "quote"; then
+              echo "✅ JavaScript rendering is working! (found dynamic content)"
+            else
+              echo "⚠️ JavaScript rendering may have issues (no dynamic content found)"
+              echo "   This might affect JS-heavy sites"
+            fi
+          else
+            echo "⚠️ JavaScript rendering test failed"
+            echo "$JS_TEST" | jq '.' 2>/dev/null || echo "$JS_TEST"
+            echo ""
+            echo "📋 Worker logs for debugging:"
+            docker compose logs worker --tail 50 2>/dev/null || true
+          fi
 
       - name: Determine URLs for this chunk
         id: get-urls
@@ -171,21 +333,18 @@ jobs:
 
       - name: Run Scraper
         env:
-          # Set memory limit and enable garbage collection (2GB for Cheerio, 4GB for Puppeteer)
-          NODE_OPTIONS: ${{ (github.event.client_payload.engine == 'puppeteer' || github.event.inputs.engine == 'puppeteer') && '--max-old-space-size=4096 --expose-gc' || '--max-old-space-size=2048 --expose-gc' }}
+          # Set memory limit and enable garbage collection
+          NODE_OPTIONS: "--max-old-space-size=4096 --expose-gc"
           
           # Default Upstash credentials (from repository secrets)
-          # These are used when BYOK is not enabled
           UPSTASH_VECTOR_REST_URL: ${{ secrets.UPSTASH_VECTOR_REST_URL }}
           UPSTASH_VECTOR_REST_TOKEN: ${{ secrets.UPSTASH_VECTOR_REST_TOKEN }}
           
-          # Redis credentials for job status tracking (always from secrets)
+          # Redis credentials for job status tracking
           UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
           UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
 
           # BYOK Vector DB credentials (from dispatch payload - overrides defaults)
-          # When these are set, the scraper will use customer's vector DB instead of platform default
-          # Note: We use empty string fallback to avoid undefined values
           BYOK_VECTOR_DB_PROVIDER: ${{ github.event.client_payload.vector_db_provider }}
           BYOK_VECTOR_DB_URL: ${{ github.event.client_payload.vector_db_url }}
           BYOK_VECTOR_DB_TOKEN: ${{ github.event.client_payload.vector_db_token }}
@@ -195,16 +354,21 @@ jobs:
           # Callback configuration
           CALLBACK_SECRET: ${{ secrets.SCRAPER_CALLBACK_SECRET }}
 
-          # Firecrawl API key (for firecrawl engine)
+          # Firecrawl API key (for firecrawl cloud engine)
           FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
 
-          # Job parameters - URLs from previous step
+          # Firecrawl Docker configuration (for firecrawl-docker engine)
+          # Uses local container started by docker-compose
+          FIRECRAWL_DOCKER_URL: ${{ github.event.client_payload.firecrawl_docker_url || 'http://localhost:3002' }}
+          FIRECRAWL_DOCKER_API_KEY: ${{ github.event.client_payload.firecrawl_docker_api_key || '' }}
+
+          # Job parameters
           URLS_JSON: ${{ steps.get-urls.outputs.urls_json }}
           BRAND_SLUG: ${{ github.event.client_payload.brand_slug || github.event.inputs.brand_slug }}
           JOB_ID: ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}
           CALLBACK_URL: ${{ github.event.client_payload.callback_url || '' }}
           SCRAPER_ENGINE: ${{ github.event.client_payload.engine || github.event.inputs.engine || 'cheerio' }}
-
+          
           # Chunk processing metadata
           CHUNK_ID: ${{ matrix.chunk }}
           TOTAL_CHUNKS: ${{ github.event.client_payload.total_chunks_count || github.event.inputs.total_chunks || 1 }}
@@ -213,6 +377,7 @@ jobs:
           echo "   Brand: $BRAND_SLUG"
           echo "   Job ID: $JOB_ID"
           echo "   Engine: $SCRAPER_ENGINE"
+          echo "   Firecrawl URL: $FIRECRAWL_DOCKER_URL"
           echo "   Memory limit: $NODE_OPTIONS"
           echo "   URLs count: $(echo "$URLS_JSON" | jq -r 'length' 2>/dev/null || echo 'unknown')"
           
@@ -225,12 +390,46 @@ jobs:
 
           npm run scrape
 
+      # Show Firecrawl logs on failure for debugging
+      - name: Show Firecrawl Logs on Failure
+        if: failure() && (github.event.client_payload.engine == 'firecrawl-docker' || github.event.inputs.engine == 'firecrawl-docker')
+        run: |
+          echo "📋 Firecrawl container status:"
+          cd /tmp/firecrawl 2>/dev/null && docker compose ps || echo "No Firecrawl containers"
+          
+          echo ""
+          echo "📋 API container logs:"
+          cd /tmp/firecrawl 2>/dev/null && docker compose logs api --tail 100 || echo "No API logs"
+          
+          echo ""
+          echo "📋 Worker container logs:"
+          cd /tmp/firecrawl 2>/dev/null && docker compose logs worker --tail 100 || echo "No worker logs"
+          
+          echo ""
+          echo "📋 Playwright service logs:"
+          cd /tmp/firecrawl 2>/dev/null && docker compose logs playwright-service --tail 100 || echo "No Playwright logs"
+          
+          echo ""
+          echo "📋 Redis logs:"
+          cd /tmp/firecrawl 2>/dev/null && docker compose logs redis --tail 50 || echo "No Redis logs"
+
+      # Cleanup Firecrawl containers
+      - name: Cleanup Firecrawl Docker
+        if: always() && (github.event.client_payload.engine == 'firecrawl-docker' || github.event.inputs.engine == 'firecrawl-docker')
+        run: |
+          echo "🧹 Cleaning up Firecrawl containers..."
+          cd /tmp/firecrawl 2>/dev/null && docker compose down -v --remove-orphans || echo "No Firecrawl containers to clean up"
+
       - name: Job Summary
         if: always()
+        env:
+          CHUNK_ID: ${{ matrix.chunk }}
+          TOTAL_CHUNKS: ${{ github.event.client_payload.total_chunks_count || github.event.inputs.total_chunks || 1 }}
         run: |
-          echo "## Scrape Job Complete (Chunk ${{ env.CHUNK_ID }}/${{ env.TOTAL_CHUNKS }})" >> $GITHUB_STEP_SUMMARY
+          echo "## Scrape Job Complete (Chunk $CHUNK_ID/$TOTAL_CHUNKS)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Brand:** ${{ github.event.client_payload.brand_slug || github.event.inputs.brand_slug }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Job ID:** ${{ github.event.client_payload.job_id || github.event.inputs.job_id }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Chunk:** ${{ env.CHUNK_ID }}/${{ env.TOTAL_CHUNKS }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Engine:** ${{ github.event.client_payload.engine || github.event.inputs.engine || 'cheerio' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Chunk:** $CHUNK_ID/$TOTAL_CHUNKS" >> $GITHUB_STEP_SUMMARY
           echo "- **Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY

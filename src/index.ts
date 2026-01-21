@@ -44,6 +44,16 @@ async function loadFirecrawlScraper() {
   };
 }
 
+async function loadFirecrawlDockerScraper() {
+  const module = await import("./scrapers/firecrawl-docker-scraper.js");
+  return {
+    scrapeMultipleUrls: module.scrapeMultipleUrlsWithFirecrawlDocker,
+    isConfigured: module.isFirecrawlDockerConfigured,
+    setConfig: module.setFirecrawlDockerConfig,
+    testConnection: module.testFirecrawlDockerConnection,
+  };
+}
+
 interface CliArgs {
   urls?: string[];
   urlsJson?: string;
@@ -67,6 +77,9 @@ interface CliArgs {
   vectorDbToken?: string;
   vectorDbIndexName?: string;
   vectorDbNamespace?: string;
+  // Firecrawl Docker configuration (optional - for self-hosted Firecrawl)
+  firecrawlDockerUrl?: string;
+  firecrawlDockerApiKey?: string;
 }
 
 /**
@@ -165,6 +178,14 @@ function parseArgs(): CliArgs {
     parsed.vectorDbNamespace = process.env.BYOK_VECTOR_DB_NAMESPACE;
   }
 
+  // Firecrawl Docker configuration from environment
+  if (!parsed.firecrawlDockerUrl && process.env.FIRECRAWL_DOCKER_URL) {
+    parsed.firecrawlDockerUrl = process.env.FIRECRAWL_DOCKER_URL;
+  }
+  if (!parsed.firecrawlDockerApiKey && process.env.FIRECRAWL_DOCKER_API_KEY) {
+    parsed.firecrawlDockerApiKey = process.env.FIRECRAWL_DOCKER_API_KEY;
+  }
+
   return {
     urls: parsed.urls,
     urlsJson: parsed.urlsJson,
@@ -186,6 +207,9 @@ function parseArgs(): CliArgs {
     vectorDbToken: parsed.vectorDbToken,
     vectorDbIndexName: parsed.vectorDbIndexName,
     vectorDbNamespace: parsed.vectorDbNamespace,
+    // Firecrawl Docker configuration
+    firecrawlDockerUrl: parsed.firecrawlDockerUrl,
+    firecrawlDockerApiKey: parsed.firecrawlDockerApiKey,
   };
 }
 
@@ -384,6 +408,35 @@ async function main() {
             console.log("🔥 Using Firecrawl for LLM-optimized scraping");
             scrapedContents = await firecrawlScraper.scrapeMultipleUrls(urlBatch, scrapeOptions);
           }
+          break;
+        }
+        case "firecrawl-docker": {
+          const firecrawlDockerScraper = await loadFirecrawlDockerScraper();
+          // Set dynamic config if provided via BYOK
+          if (args.firecrawlDockerUrl) {
+            firecrawlDockerScraper.setConfig({
+              baseUrl: args.firecrawlDockerUrl,
+              apiKey: args.firecrawlDockerApiKey,
+            });
+          }
+          if (!firecrawlDockerScraper.isConfigured()) {
+            console.error("❌ FIRECRAWL_DOCKER_URL not configured");
+            throw new Error("Firecrawl Docker URL is required for firecrawl-docker engine");
+          }
+          
+          console.log("🔥 Using Firecrawl Docker (self-hosted) for LLM-optimized scraping");
+          console.log("   JavaScript rendering: enabled (via Playwright)");
+          console.log(`   Firecrawl URL: ${args.firecrawlDockerUrl || process.env.FIRECRAWL_DOCKER_URL}`);
+
+          // Scrape with Firecrawl Docker - full JavaScript rendering enabled
+          scrapedContents = await firecrawlDockerScraper.scrapeMultipleUrls(urlBatch, {
+            ...scrapeOptions,
+            waitForJs: true, // Enable JavaScript rendering
+            waitTime: 3000, // Wait 3s for JS content to load
+            testConnectionFirst: true, // Verify connection before scraping
+          });
+
+          console.log(`   ✅ Firecrawl scraped ${scrapedContents.length}/${urlBatch.length} URLs`);
           break;
         }
         case "cheerio":

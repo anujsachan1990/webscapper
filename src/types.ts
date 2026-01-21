@@ -11,7 +11,7 @@ export interface ScrapedContent {
   images?: Array<{ src: string; alt?: string; title?: string }>;
 }
 
-export type ScraperEngine = "cheerio" | "puppeteer" | "firecrawl";
+export type ScraperEngine = "cheerio" | "puppeteer" | "firecrawl" | "firecrawl-docker";
 
 export interface ScrapeOptions {
   engine?: ScraperEngine;
